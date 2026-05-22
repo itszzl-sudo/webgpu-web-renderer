@@ -185,6 +185,12 @@ impl Engine {
                         log::info!("CPU layout compute: {} items", item_count);
                     }
 
+                    // 计算包含块（为 absolute 元素调整相对于最近定位祖先的位置）
+                    self.compute_containing_blocks();
+
+                    // Flexbox 布局计算
+                    self.compute_flex_layout();
+
                     // 计算裁剪矩形（基于父容器 overflow 设置）
                     self.compute_clip_rects();
 
@@ -192,6 +198,227 @@ impl Engine {
                 }
                 Err(e) => {
                     log::error!("Layout conversion failed: {}", e);
+                }
+            }
+        }
+    }
+
+    /// 计算包含块 — 为 absolute 元素调整相对于最近定位祖先的位置
+    fn compute_containing_blocks(&mut self) {
+        // 建立 dom_id → LayoutItem 索引
+        let idx_map: std::collections::HashMap<usize, usize> = self.layout_items.iter()
+            .enumerate()
+            .map(|(i, it)| (it.dom_id as usize, i))
+            .collect();
+
+        let dom_ids: Vec<usize> = self.layout_items.iter().map(|it| it.dom_id as usize).collect();
+
+        for &dom_id in &dom_ids {
+            let idx = match idx_map.get(&dom_id) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let item = &self.layout_items[idx];
+            if item.flow_type != 1 {
+                // 仅对 absolute/fixed 元素处理包含块
+                continue;
+            }
+
+            // 向上遍历 DOM 祖先，找最近定位祖先 (position ≠ static)
+            let mut current = dom_id;
+            let mut container_pos = None;
+            loop {
+                let parent_id = match self.dom_tree.get_node(current) {
+                    Some(n) => n.parent,
+                    None => break,
+                };
+                let pid = match parent_id {
+                    Some(p) => p,
+                    None => break,
+                };
+                if let Some(&pidx) = idx_map.get(&pid) {
+                    let parent = &self.layout_items[pidx];
+                    // 定位祖先：relative, absolute, fixed, sticky
+                    if parent.flow_type != 0 && parent.flow_type != 2 && parent.flow_type != 3 {
+                        // 包含块 = 定位祖先的内容区域 (padding box)
+                        container_pos = Some((
+                            parent.pos[0] + parent.padding[3],  // x + padding-left
+                            parent.pos[1] + parent.padding[0],  // y + padding-top
+                        ));
+                        break;
+                    }
+                }
+                current = pid;
+            }
+
+            // 应用包含块偏移
+            if let Some((cx, cy)) = container_pos {
+                self.layout_items[idx].pos[0] += cx;
+                self.layout_items[idx].pos[1] += cy;
+            }
+        }
+    }
+
+    /// Flexbox 布局计算 — 找出所有 flex 容器并对其子元素排布
+    fn compute_flex_layout(&mut self) {
+        // 建立 dom_id → 索引映射
+        let idx_map: std::collections::HashMap<usize, usize> = self.layout_items.iter()
+            .enumerate()
+            .map(|(i, it)| (it.dom_id as usize, i))
+            .collect();
+
+        // 收集 flex 容器的数据 (先读后写，避免借用冲突)
+        struct FlexContainer {
+            container_idx: usize,
+            child_indices: Vec<usize>,
+            flex_dir: u32,
+            flex_wrap: u32,
+            justify: u32,
+            align: u32,
+            gap: f32,
+            available_main: f32,
+            container_pos: [f32; 2],
+            container_padding: [f32; 4],
+            container_cross: f32,
+        }
+
+        let mut flex_containers: Vec<FlexContainer> = Vec::new();
+
+        for container_idx in 0..self.layout_items.len() {
+            let container = &self.layout_items[container_idx];
+            if container.flow_type != 2 || container.is_valid == 0 || container.is_hide == 1 {
+                continue;
+            }
+            let container_dom_id = container.dom_id as usize;
+
+            let child_indices: Vec<usize> = self.layout_items.iter()
+                .enumerate()
+                .filter(|(_, it)| {
+                    if it.is_valid == 0 || it.is_hide == 1 { return false; }
+                    self.dom_tree.get_node(it.dom_id as usize)
+                        .and_then(|n| n.parent)
+                        .map_or(false, |p| p == container_dom_id)
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            if child_indices.is_empty() {
+                continue;
+            }
+
+            let is_row = container.flex_direction == 0 || container.flex_direction == 1;
+            let available_main = if is_row { container.size[0] } else { container.size[1] };
+
+            flex_containers.push(FlexContainer {
+                container_idx,
+                child_indices,
+                flex_dir: container.flex_direction,
+                flex_wrap: container.flex_wrap,
+                justify: container.justify_content,
+                align: container.align_items,
+                gap: container.gap,
+                available_main,
+                container_pos: container.pos,
+                container_padding: container.padding,
+                container_cross: if is_row { container.size[1] } else { container.size[0] },
+            });
+        }
+
+        // 执行 flex 布局
+        for fc in &flex_containers {
+            let is_row = fc.flex_dir == 0 || fc.flex_dir == 1;
+            let is_reverse = fc.flex_dir == 1 || fc.flex_dir == 3;
+
+            // 按 order 排序
+            let mut sorted: Vec<usize> = fc.child_indices.clone();
+            sorted.sort_by_key(|&i| self.layout_items[i].order);
+
+            // 计算总 flex-grow 和基础尺寸
+            let mut total_grow = 0.0f32;
+            let mut total_basis = 0.0f32;
+            for &idx in &sorted {
+                total_grow += self.layout_items[idx].weight;
+                let basis = self.layout_items[idx].flex_basis.max(0.0);
+                let item_main = if is_row {
+                    self.layout_items[idx].size[0].max(basis)
+                } else {
+                    self.layout_items[idx].size[1].max(basis)
+                };
+                total_basis += item_main;
+            }
+
+            // 计算剩余空间
+            let item_count = sorted.len() as f32;
+            let gaps = fc.gap * (item_count - 1.0).max(0.0);
+            let remaining = fc.available_main - total_basis - gaps;
+
+            // 分配空间
+            let mut main_offset = 0.0;
+            for (pos, &idx) in sorted.iter().enumerate() {
+                let basis = self.layout_items[idx].flex_basis.max(0.0);
+                let base_main = if is_row {
+                    self.layout_items[idx].size[0].max(basis)
+                } else {
+                    self.layout_items[idx].size[1].max(basis)
+                };
+
+                let extra = if total_grow > 0.0 && remaining > 0.0 {
+                    (self.layout_items[idx].weight / total_grow) * remaining
+                } else {
+                    0.0
+                };
+
+                let final_main = base_main + extra;
+                let cross_size = if is_row { self.layout_items[idx].size[1] } else { self.layout_items[idx].size[0] };
+
+                let cross_offset = match fc.align {
+                    1 => 0.0,
+                    2 => fc.container_cross - cross_size,
+                    3 => (fc.container_cross - cross_size) / 2.0,
+                    _ => 0.0,
+                };
+
+                let final_main_offset = if is_reverse {
+                    fc.available_main - main_offset - final_main
+                } else {
+                    main_offset
+                };
+
+                if is_row {
+                    self.layout_items[idx].pos[0] = fc.container_pos[0] + fc.container_padding[3] + final_main_offset;
+                    self.layout_items[idx].pos[1] = fc.container_pos[1] + fc.container_padding[0] + cross_offset;
+                    if fc.align == 0 { self.layout_items[idx].size[1] = fc.container_cross; }
+                    self.layout_items[idx].size[0] = final_main;
+                } else {
+                    self.layout_items[idx].pos[1] = fc.container_pos[1] + fc.container_padding[0] + final_main_offset;
+                    self.layout_items[idx].pos[0] = fc.container_pos[0] + fc.container_padding[3] + cross_offset;
+                    if fc.align == 0 { self.layout_items[idx].size[0] = fc.container_cross; }
+                    self.layout_items[idx].size[1] = final_main;
+                }
+
+                main_offset += final_main + fc.gap;
+            }
+
+            // justify-content 调整
+            if sorted.len() > 1 && remaining > 0.0 {
+                let extra_space = remaining;
+                let (shift, extra_per_item) = match fc.justify {
+                    1 => (extra_space, 0.0),
+                    2 => (extra_space / 2.0, 0.0),
+                    3 => (0.0, extra_space / (sorted.len() as f32)),
+                    4 => (extra_space / (2.0 * sorted.len() as f32), extra_space / (sorted.len() as f32)),
+                    5 => (0.0, extra_space / ((sorted.len() + 1) as f32)),
+                    _ => (0.0, 0.0),
+                };
+
+                let mut cumulative_shift = shift;
+                for &idx in &sorted {
+                    if is_row {
+                        self.layout_items[idx].pos[0] += cumulative_shift;
+                    } else {
+                        self.layout_items[idx].pos[1] += cumulative_shift;
+                    }
+                    cumulative_shift += extra_per_item;
                 }
             }
         }

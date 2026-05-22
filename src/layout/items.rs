@@ -58,6 +58,7 @@ pub struct LayoutItem {
     pub min_height: f32,           // 最小高度
     pub clip_rect: [f32; 4],       // 裁剪矩形 [x, y, width, height]，全零表示不裁剪
     pub scroll_offset: [f32; 2],   // 滚动偏移 [scroll_x, scroll_y]
+    pub relative_offset: [f32; 2], // 相对定位偏移 [left, top]
 }
 
 impl LayoutItem {
@@ -119,6 +120,7 @@ impl LayoutItem {
             min_height: 0.0, // 默认 0
             clip_rect: [0.0, 0.0, 0.0, 0.0], // 默认不裁剪
             scroll_offset: [0.0, 0.0], // 默认无滚动偏移
+            relative_offset: [0.0, 0.0], // 默认无相对偏移
         }
     }
 
@@ -375,6 +377,11 @@ impl LayoutItem {
         self
     }
 
+    pub fn with_relative_offset(mut self, left: f32, top: f32) -> Self {
+        self.relative_offset = [left, top];
+        self
+    }
+
     pub fn hide(mut self) -> Self {
         self.is_hide = 1;
         self
@@ -548,7 +555,7 @@ mod tests {
         // size[2] + margin[4] + padding[4] + pos[2] + size_constraint[2] + flow_type + weight + flex_shrink + z_index + tex_idx + is_valid + is_hide + bg_color[4] + border[4] + border_color[4] + opacity + overflow + transform[6] + shadow_color[4] + shadow_offset[2] + shadow_blur + shadow_spread + has_shadow + border_radius[4] + visibility
         // = 8 + 16 + 16 + 8 + 8 + 4*13 + 4*11 + 4*5 + 4*4 + 4*3 + 4 + 8 + 16 + 24 + 16 + 8 = 272 bytes (实际可能因对齐更大)
         // size[2] + margin[4] + padding[4] + pos[2] + size_constraint[2] + (u32)*13 + (f32)*11 + (f32)*5 + (f32)*4 + (f32)*3 + i32 + bg_color[4] + transform[6] + shadow_color[4]
-        assert!(LayoutItem::SIZE >= 312);
+        assert!(LayoutItem::SIZE >= 320);
         assert_eq!(LayoutEnv::SIZE, 20);
     }
 

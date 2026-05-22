@@ -424,22 +424,25 @@ impl RenderPipelineWrapper {
         let bind_group = self.bind_group.as_ref().ok_or("Bind group not created")?;
 
         // 预处理：收集所有可见项的顶点和裁剪信息
-        let mut draw_items: Vec<([Vertex; 6], [f32; 4])> = Vec::new();
+        let mut draw_items: Vec<([Vertex; 6], [f32; 4], f32)> = Vec::new();
         for item in layout_items {
             if item.is_valid == 0 || item.is_hide == 1 {
                 continue;
             }
             let rect = Self::generate_vertices_from_item(item);
-            draw_items.push((rect, item.clip_rect));
+            draw_items.push((rect, item.clip_rect, item.z_index));
         }
 
         if draw_items.is_empty() {
             return Ok(());
         }
 
+        // 按 z-index 排序实现基本层叠顺序（低 z-index 先绘制，在上层之下）
+        draw_items.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
         // 创建所有顶点缓冲区
         let mut vertex_buffers: Vec<wgpu::Buffer> = Vec::with_capacity(draw_items.len());
-        for (rect, _) in &draw_items {
+        for (rect, _, _) in &draw_items {
             let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Vertex Buffer"),
                 contents: bytemuck::cast_slice(rect),
@@ -476,7 +479,7 @@ impl RenderPipelineWrapper {
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, bind_group, &[]);
 
-            for (i, (_, clip_rect)) in draw_items.iter().enumerate() {
+            for (i, (_, clip_rect, _)) in draw_items.iter().enumerate() {
                 // 设置裁剪矩形
                 let has_clip = clip_rect[2] > 0.0 && clip_rect[3] > 0.0;
                 if has_clip {

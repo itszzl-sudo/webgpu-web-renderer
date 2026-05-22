@@ -62,7 +62,7 @@ impl LayoutConverter {
         let weight = self.parse_flex_grow(computed_style);
         let flex_shrink = self.parse_flex_shrink(computed_style);
 
-        let (is_absolute, pos_x, pos_y) = self.parse_position(computed_style);
+let (is_absolute, pos_x, pos_y, rel_left, rel_top) = self.parse_position(computed_style);
         let (right, bottom) = self.parse_right_bottom(computed_style, is_absolute);
         let is_hide = self.parse_display_hide(computed_style);
         let final_flow_type = if is_absolute { 1 } else { flow_type };
@@ -73,7 +73,6 @@ impl LayoutConverter {
         let opacity = self.parse_opacity(computed_style);
         let overflow = self.parse_overflow(computed_style);
         let transform = self.parse_transform(computed_style);
-
         let (shadow_enabled, shadow_color, shadow_offset, shadow_blur, shadow_spread) = self.parse_box_shadow(computed_style);
         let border_radius = self.parse_border_radius(computed_style);
         let visibility = self.parse_visibility(computed_style);
@@ -103,8 +102,9 @@ impl LayoutConverter {
         let min_width = self.parse_min_width(computed_style);
         let max_height = self.parse_max_height(computed_style);
         let min_height = self.parse_min_height(computed_style);
+        let is_border_box = self.parse_box_sizing(computed_style);
 
-        LayoutItem::new()
+        let mut layout = LayoutItem::new()
             .with_dom_id(node_id as u32)
             .with_size(width, height)
             .with_margin(margin.0, margin.1, margin.2, margin.3)
@@ -112,6 +112,7 @@ impl LayoutConverter {
             .with_pos(pos_x, pos_y)
             .with_z_index(z_index)
             .with_flow_type(final_flow_type)
+            .with_relative_offset(rel_left, rel_top)
             .with_weight(weight)
             .with_flex_shrink(flex_shrink)
             .with_hide_if(is_hide)
@@ -150,7 +151,18 @@ impl LayoutConverter {
             .with_max_width(max_width)
             .with_min_width(min_width)
             .with_max_height(max_height)
-            .with_min_height(min_height)
+            .with_min_height(min_height);
+
+        // box-sizing: border-box → width/height 包含 padding+border，需要调整内容尺寸
+        if is_border_box {
+            let bw_h = border.1 + border.3;  // left + right
+            let bw_v = border.0 + border.2;  // top + bottom
+            let cw = (layout.size[0] - padding.1 - padding.3 - bw_h).max(0.0);
+            let ch = (layout.size[1] - padding.0 - padding.2 - bw_v).max(0.0);
+            layout.size = [cw, ch];
+        }
+
+        layout
     }
 
     fn parse_box_shadow(&self, style: &ComputedStyle) -> (u32, [f32; 4], [f32; 2], f32, f32) {
@@ -160,46 +172,51 @@ impl LayoutConverter {
         }
     }
 
-    fn parse_shadow_string(&self, shadow_str: &str) -> (u32, [f32; 4], [f32; 2], f32, f32) {
+fn parse_shadow_string(&self, shadow_str: &str) -> (u32, [f32; 4], [f32; 2], f32, f32) {
         let shadow_str = shadow_str.trim().to_lowercase();
         if shadow_str.is_empty() || shadow_str == "none" {
             return (0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.0], 0.0, 0.0);
         }
 
         let parts: Vec<&str> = shadow_str.split_whitespace().collect();
-        if parts.is_empty() {
-            return (0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.0], 0.0, 0.0);
-        }
 
-        let h_offset = parts.first()
-            .and_then(|p| p.trim_end_matches("px").parse::<f32>().ok())
-            .unwrap_or(0.0);
-        let v_offset = parts.get(1)
-            .and_then(|p| p.trim_end_matches("px").parse::<f32>().ok())
-            .unwrap_or(0.0);
+        // box-shadow: offset-x offset-y blur-radius spread-radius color
+        let mut offset_x = 0.0f32;
+        let mut offset_y = 0.0f32;
+        let mut blur = 0.0f32;
+        let mut spread = 0.0f32;
+        let mut color = [0.0f32; 4];
+        let mut color_found = false;
 
-        let mut blur = 0.0;
-        let mut spread = 0.0;
-        let mut color = [0.0, 0.0, 0.0, 0.5];
-
-        for part in parts.iter().skip(2) {
-            if part.starts_with('#') || part.starts_with("rgb") || part.starts_with("rgba")
-                || ["red", "blue", "green", "black", "white", "transparent"].contains(part) {
-                let (r, g, b, a) = self.parse_color(part);
-                color = [r, g, b, a];
-                break;
-            }
-
-            if let Ok(val) = part.trim_end_matches("px").parse::<f32>() {
-                if blur == 0.0 {
-                    blur = val;
-                } else if spread == 0.0 {
-                    spread = val;
+        for (i, part) in parts.iter().enumerate() {
+            match i {
+                0 => offset_x = self.parse_css_length(part).unwrap_or(0.0),
+                1 => offset_y = self.parse_css_length(part).unwrap_or(0.0),
+                2 => blur = self.parse_css_length(part).unwrap_or(0.0),
+                3 => spread = self.parse_css_length(part).unwrap_or(0.0),
+                _ => {
+                    if !color_found {
+                        let parsed = self.parse_color(part);
+                        color = [parsed.0, parsed.1, parsed.2, parsed.3];
+                        color_found = true;
+                    }
                 }
             }
         }
 
-        (1, color, [h_offset, v_offset], blur, spread)
+        if !color_found {
+            color = [0.0, 0.0, 0.0, 1.0]; // 默认黑色
+        }
+
+        (1, color, [offset_x, offset_y], blur, spread)
+    }
+
+    /// 解析 box-sizing
+    fn parse_box_sizing(&self, style: &ComputedStyle) -> bool {
+        match self.style_matcher.get_property(style, "box-sizing") {
+            Some(StyleValue::String(s)) => s == "border-box",
+            _ => false,
+        }
     }
 
     fn parse_border_radius(&self, style: &ComputedStyle) -> (f32, f32, f32, f32) {
@@ -731,7 +748,7 @@ impl LayoutConverter {
         }
     }
 
-    fn parse_position(&self, style: &ComputedStyle) -> (bool, f32, f32) {
+    fn parse_position(&self, style: &ComputedStyle) -> (bool, f32, f32, f32, f32) {
         let position_type = match self.style_matcher.get_property(style, "position") {
             Some(StyleValue::String(s)) => s.as_str(),
             _ => "static",
@@ -742,9 +759,13 @@ impl LayoutConverter {
         if is_absolute {
             let top = self.parse_length(style, "top", 0.0);
             let left = self.parse_length(style, "left", 0.0);
-            (true, left, top)
+            (true, left, top, 0.0, 0.0)
+        } else if position_type == "relative" {
+            let rel_left = self.parse_length(style, "left", 0.0);
+            let rel_top = self.parse_length(style, "top", 0.0);
+            (false, 0.0, 0.0, rel_left, rel_top)
         } else {
-            (false, 0.0, 0.0)
+            (false, 0.0, 0.0, 0.0, 0.0)
         }
     }
 

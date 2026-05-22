@@ -321,16 +321,44 @@ pub struct CpuLayoutCompute;
 impl CpuLayoutCompute {
     /// 执行 CPU 布局计算
     pub fn compute(items: &mut [LayoutItem], env: &LayoutEnv) {
-        for item in items.iter_mut() {
+        for i in 0..items.len() {
+            let item = &items[i];
             if item.is_valid == 0 || item.is_hide == 1 {
                 continue;
             }
 
             match item.flow_type {
-                0 => Self::compute_flow(item, env),
-                1 => Self::compute_absolute(item, env),
-                2 => Self::compute_flex(item, env),
+                0 => Self::compute_flow(&mut items[i], env),
+                1 => Self::compute_absolute(&mut items[i], env),
+                2 => Self::compute_flex(&mut items[i], env),
                 _ => {}
+            }
+        }
+
+        // 后处理：相邻块级元素 margin 折叠
+        Self::collapse_margins(items);
+    }
+
+    /// 相邻块级元素 margin 折叠
+    /// 两个相邻的文档流元素，bottom margin 和 top margin 取最大值
+    fn collapse_margins(items: &mut [LayoutItem]) {
+        for i in 1..items.len() {
+            let prev = items[i - 1];
+            if prev.is_valid == 0 || prev.is_hide == 1 || prev.flow_type != 0 {
+                continue;
+            }
+            let curr = items[i];
+            if curr.is_valid == 0 || curr.is_hide == 1 || curr.flow_type != 0 {
+                continue;
+            }
+
+            let prev_bottom_margin = prev.margin[2]; // margin-bottom
+            let curr_top_margin = curr.margin[0];    // margin-top
+
+            if prev_bottom_margin > 0.0 && curr_top_margin > 0.0 {
+                let collapsed = prev_bottom_margin.max(curr_top_margin);
+                let overlap = curr_top_margin - collapsed;
+                items[i].pos[1] -= overlap; // 上移减少间距
             }
         }
     }
@@ -354,6 +382,12 @@ impl CpuLayoutCompute {
         }
 
         item.size = [width, height];
+
+        // 应用相对定位偏移
+        if item.relative_offset[0] != 0.0 || item.relative_offset[1] != 0.0 {
+            item.pos[0] += item.relative_offset[0];
+            item.pos[1] += item.relative_offset[1];
+        }
     }
 
     /// 绝对定位布局计算
