@@ -119,13 +119,14 @@ impl StyleMatcher {
 
     /// 检查规则是否匹配节点
     fn rule_matches(&self, tree: &DomTree, node_id: usize, rule: &StyleRule) -> bool {
+        // 所有选择器都必须匹配（复合选择器如 div:first-child 需要 AND 逻辑）
         for selector in &rule.selectors {
-            if self.selector_matches(tree, node_id, selector) {
-                return true;
+            if !self.selector_matches(tree, node_id, selector) {
+                return false;
             }
         }
 
-        false
+        true
     }
 
     /// 检查选择器是否匹配
@@ -153,6 +154,9 @@ impl StyleMatcher {
             Selector::Class(selector_class) => classes.contains(&selector_class.as_str()),
             Selector::Attribute(attr_name, attr_value) => {
                 node.get_attr(attr_name).map_or(false, |v| v == attr_value)
+            }
+            Selector::PseudoClass(pseudo) => {
+                Self::matches_pseudo_class(tree, node_id, pseudo)
             }
             Selector::Descendant(ancestor_selector, descendant_selector) => {
                 // 首先检查当前节点是否匹配后代部分
@@ -214,9 +218,74 @@ impl StyleMatcher {
             Selector::Attribute(attr_name, attr_value) => {
                 node.get_attr(attr_name).map_or(false, |v| v == attr_value)
             }
+            Selector::PseudoClass(pseudo) => {
+                Self::matches_pseudo_class(tree, node_id, pseudo)
+            }
             Selector::Descendant(_, _) => {
                 // 简化处理：后代选择器在简单匹配中只匹配后代部分
                 true
+            }
+        }
+    }
+
+    /// 检查伪类是否匹配
+    fn matches_pseudo_class(tree: &DomTree, node_id: usize, pseudo: &str) -> bool {
+        match pseudo {
+            "hover" | "active" | "focus" | "visited" => {
+                // 状态伪类需要引擎运行时设置状态标记
+                // 目前返回 true，以便样式在默认状态下仍可应用
+                // TODO: 集成 Engine 的 hovered_nodes/active_nodes 状态
+                false
+            }
+            "first-child" => {
+                let node = match tree.get_node(node_id) {
+                    Some(n) => n,
+                    None => return false,
+                };
+                // 检查是否有前一个兄弟节点
+                if let Some(parent_id) = node.parent {
+                    if let Some(parent) = tree.get_node(parent_id) {
+                        return parent.children.first().map_or(false, |&first| first == node_id);
+                    }
+                }
+                false
+            }
+            "last-child" => {
+                let node = match tree.get_node(node_id) {
+                    Some(n) => n,
+                    None => return false,
+                };
+                if let Some(parent_id) = node.parent {
+                    if let Some(parent) = tree.get_node(parent_id) {
+                        return parent.children.last().map_or(false, |&last| last == node_id);
+                    }
+                }
+                false
+            }
+            pseudo if pseudo.starts_with("nth-child(") && pseudo.ends_with(')') => {
+                let inner = &pseudo[10..pseudo.len() - 1];
+                let n: usize = match inner.parse() {
+                    Ok(n) if n >= 1 => n,
+                    _ => return false,
+                };
+                let node = match tree.get_node(node_id) {
+                    Some(n) => n,
+                    None => return false,
+                };
+                if let Some(parent_id) = node.parent {
+                    if let Some(parent) = tree.get_node(parent_id) {
+                        let position = parent.children.iter()
+                            .position(|&id| id == node_id)
+                            .map(|p| p + 1)
+                            .unwrap_or(0);
+                        return position == n;
+                    }
+                }
+                false
+            }
+            _ => {
+                log::warn!("Unknown pseudo-class: :{}", pseudo);
+                false
             }
         }
     }
@@ -499,5 +568,99 @@ mod tests {
         } else {
             panic!("Expected Color");
         }
+    }
+
+    #[test]
+    fn test_pseudo_class_first_child() {
+        let css = "div:first-child { color: red; }";
+        let stylesheet = StyleSheet::parse(css);
+        let matcher = StyleMatcher::new(stylesheet);
+
+        let mut tree = DomTree::new();
+        let parent = tree.create_node("parent".to_string());
+        let child1 = tree.create_node("div".to_string());
+        let child2 = tree.create_node("div".to_string());
+
+        // 建立父子关系
+        tree.get_node_mut(child1).unwrap().parent = Some(parent);
+        tree.get_node_mut(child2).unwrap().parent = Some(parent);
+        tree.get_node_mut(parent).unwrap().children = vec![child1, child2];
+
+        // child1 是 first-child
+        let style = matcher.compute_style(&tree, child1);
+        let color = style.properties.get("color").unwrap();
+        if let StyleValue::Color(c) = color {
+            assert_eq!(c, "red");
+        } else {
+            panic!("Expected Color for first-child");
+        }
+
+        // child2 不是 first-child
+        let style2 = matcher.compute_style(&tree, child2);
+        assert!(!style2.properties.contains_key("color"));
+    }
+
+    #[test]
+    fn test_pseudo_class_last_child() {
+        let css = "div:last-child { color: blue; }";
+        let stylesheet = StyleSheet::parse(css);
+        let matcher = StyleMatcher::new(stylesheet);
+
+        let mut tree = DomTree::new();
+        let parent = tree.create_node("parent".to_string());
+        let child1 = tree.create_node("div".to_string());
+        let child2 = tree.create_node("div".to_string());
+
+        tree.get_node_mut(child1).unwrap().parent = Some(parent);
+        tree.get_node_mut(child2).unwrap().parent = Some(parent);
+        tree.get_node_mut(parent).unwrap().children = vec![child1, child2];
+
+        // child2 是 last-child -> 匹配
+        let style = matcher.compute_style(&tree, child2);
+        assert!(style.properties.contains_key("color"));
+
+        // child1 不是 last-child -> 不匹配
+        let style2 = matcher.compute_style(&tree, child1);
+        assert!(!style2.properties.contains_key("color"));
+    }
+
+    #[test]
+    fn test_pseudo_class_nth_child() {
+        let css = "div:nth-child(2) { color: green; }";
+        let stylesheet = StyleSheet::parse(css);
+        let matcher = StyleMatcher::new(stylesheet);
+
+        let mut tree = DomTree::new();
+        let parent = tree.create_node("parent".to_string());
+        let child1 = tree.create_node("div".to_string());
+        let child2 = tree.create_node("div".to_string());
+        let child3 = tree.create_node("div".to_string());
+
+        tree.get_node_mut(child1).unwrap().parent = Some(parent);
+        tree.get_node_mut(child2).unwrap().parent = Some(parent);
+        tree.get_node_mut(child3).unwrap().parent = Some(parent);
+        tree.get_node_mut(parent).unwrap().children = vec![child1, child2, child3];
+
+        // child2 是第 2 个子元素 -> 匹配
+        let style = matcher.compute_style(&tree, child2);
+        assert!(style.properties.contains_key("color"));
+
+        // child1 不是第 2 个 -> 不匹配
+        let style1 = matcher.compute_style(&tree, child1);
+        assert!(!style1.properties.contains_key("color"));
+    }
+
+    #[test]
+    fn test_pseudo_class_hover_no_match_default() {
+        // :hover 在默认状态下不匹配
+        let css = "div:hover { color: red; }";
+        let stylesheet = StyleSheet::parse(css);
+        let matcher = StyleMatcher::new(stylesheet);
+
+        let mut tree = DomTree::new();
+        let node_id = tree.create_node("div".to_string());
+
+        let style = matcher.compute_style(&tree, node_id);
+        assert!(!style.properties.contains_key("color"));
     }
 }

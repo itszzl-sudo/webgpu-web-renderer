@@ -36,6 +36,8 @@ pub enum Selector {
     Universal,
     /// 后代选择器，如 "div p" (祖先, 后代)
     Descendant(Box<Selector>, Box<Selector>),
+    /// 伪类选择器，如 ":hover", ":nth-child(2)"
+    PseudoClass(String),
 }
 
 impl Selector {
@@ -59,8 +61,8 @@ impl Selector {
             }
         }
 
-        // 单选择器解析
-        result.push(Self::parse_single(selector));
+        // 单选择器解析（支持复合选择器如 div:first-child）
+        result = Self::parse_compound(selector);
         result
     }
 
@@ -70,8 +72,11 @@ impl Selector {
             return None;
         }
 
-        let ancestor = Self::parse_single(parts[0]);
-        let descendant = Self::parse_single(parts[parts.len() - 1]);
+        // 每个 part 可能是复合选择器，取第一个
+        let ancestor = Self::parse_compound(parts[0]).into_iter().next()
+            .unwrap_or(Selector::Universal);
+        let descendant = Self::parse_compound(parts[parts.len() - 1]).into_iter().next()
+            .unwrap_or(Selector::Universal);
 
         Some(Selector::Descendant(
             Box::new(ancestor),
@@ -79,33 +84,113 @@ impl Selector {
         ))
     }
 
-    /// 解析单个选择器
-    fn parse_single(selector: &str) -> Self {
+    /// 解析复合选择器 (如 "div:first-child" -> [Tag("div"), PseudoClass("first-child")])
+    fn parse_compound(selector: &str) -> Vec<Selector> {
         let selector = selector.trim();
+        if selector.is_empty() || selector == "*" {
+            return vec![Selector::Universal];
+        }
 
-        if selector == "*" {
-            Selector::Universal
-        } else if selector.starts_with('#') {
-            Selector::Id(selector[1..].to_string())
-        } else if selector.starts_with('.') {
-            Selector::Class(selector[1..].to_string())
-        } else if selector.starts_with('[') {
-            // 简化的属性选择器解析 [attr='value']
-            if let Some(end) = selector.find(']') {
-                let inner = &selector[1..end];
-                if let Some(eq) = inner.find('=') {
-                    let attr = inner[..eq].to_string();
-                    let value = inner[eq + 1..].trim_matches(|c| c == '\'' || c == '"');
-                    return Selector::Attribute(attr, value.to_string());
+        let mut result = Vec::new();
+        let chars: Vec<char> = selector.chars().collect();
+        let len = chars.len();
+        let mut i = 0;
+
+        // 解析第一个部分
+        if i < len {
+            let c = chars[i];
+            match c {
+                '#' => {
+                    i += 1;
+                    let id = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::Id(id));
+                }
+                '.' => {
+                    i += 1;
+                    let class_name = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::Class(class_name));
+                }
+                ':' => {
+                    i += 1;
+                    let pseudo = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::PseudoClass(pseudo));
+                }
+                '[' => {
+                    if let Some(end) = selector[i..].find(']') {
+                        let inner = &selector[i+1..i+end];
+                        i += end + 1;
+                        if let Some(eq) = inner.find('=') {
+                            let attr = inner[..eq].to_string();
+                            let value = inner[eq + 1..].trim_matches(|c| c == '\'' || c == '"');
+                            result.push(Selector::Attribute(attr, value.to_string()));
+                        } else {
+                            result.push(Selector::Attribute(inner.to_string(), String::new()));
+                        }
+                    }
+                }
+                _ => {
+                    // tag 名开头
+                    let tag = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::Tag(tag));
                 }
             }
-            Selector::Universal
-        } else {
-            // 标签选择器
-            Selector::Tag(selector.to_string())
         }
+
+        // 继续解析剩余部分
+        while i < len {
+            let c = chars[i];
+            match c {
+                '.' => {
+                    i += 1;
+                    let class_name = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::Class(class_name));
+                }
+                '#' => {
+                    i += 1;
+                    let id = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::Id(id));
+                }
+                ':' => {
+                    i += 1;
+                    let pseudo = Self::extract_selector_part(&chars, &mut i);
+                    result.push(Selector::PseudoClass(pseudo));
+                }
+                '[' => {
+                    if let Some(end) = selector[i..].find(']') {
+                        let inner = &selector[i+1..i+end];
+                        i += end + 1;
+                        if let Some(eq) = inner.find('=') {
+                            let attr = inner[..eq].to_string();
+                            let value = inner[eq + 1..].trim_matches(|c| c == '\'' || c == '"');
+                            result.push(Selector::Attribute(attr, value.to_string()));
+                        } else {
+                            result.push(Selector::Attribute(inner.to_string(), String::new()));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                _ => i += 1, // 跳过空白或其他字符
+            }
+        }
+
+        result
     }
-}
+
+    /// 提取选择器的一部分 (从当前位置到下一个分隔符)
+    fn extract_selector_part(chars: &[char], i: &mut usize) -> String {
+        let start = *i;
+        while *i < chars.len() {
+            let c = chars[*i];
+            if c == '.' || c == '#' || c == ':' || c == '[' {
+                break;
+            }
+            *i += 1;
+        }
+        chars[start..*i].iter().collect()
+    }
+
+    }
 
 /// CSS 规则
 #[derive(Debug, Clone)]
@@ -150,7 +235,7 @@ impl StyleRule {
     ) {
         match selector {
             Selector::Id(_) => *id_count += 1,
-            Selector::Class(_) | Selector::Attribute(_, _) => *class_count += 1,
+            Selector::Class(_) | Selector::Attribute(_, _) | Selector::PseudoClass(_) => *class_count += 1,
             Selector::Tag(_) => *tag_count += 1,
             Selector::Universal => {}
             Selector::Descendant(ancestor, descendant) => {
@@ -188,12 +273,16 @@ impl StyleSheet {
 
         for block in blocks {
             if let Some((selectors_part, declarations_part)) = Self::parse_rule_block(&block) {
-                let selectors = Self::parse_selectors(&selectors_part);
+                let selector_groups = Self::parse_selectors(&selectors_part);
                 let declarations = Self::parse_declarations(&declarations_part);
 
-                if !selectors.is_empty() && !declarations.is_empty() {
-                    let rule = StyleRule::new(selectors, declarations);
-                    stylesheet.add_rule(rule);
+                if !declarations.is_empty() {
+                    for (selectors, _specificity) in selector_groups {
+                        if !selectors.is_empty() {
+                            let rule = StyleRule::new(selectors, declarations.clone());
+                            stylesheet.add_rule(rule);
+                        }
+                    }
                 }
             }
         }
@@ -237,15 +326,17 @@ impl StyleSheet {
     }
 
     /// 解析选择器
-    fn parse_selectors(selectors_part: &str) -> Vec<Selector> {
-        // 简化：只支持单选择器，逗号分隔的多个选择器只取第一个
-        let selector = selectors_part.split(',').next().unwrap_or("").trim();
-
-        if selector.is_empty() {
-            Vec::new()
-        } else {
-            Selector::parse(selector)
-        }
+    fn parse_selectors(selectors_part: &str) -> Vec<(Vec<Selector>, u32)> {
+        // 逗号分隔 -> 多个选择器组
+        selectors_part.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let selectors = Selector::parse(s);
+                let specificity = StyleRule::calculate_specificity(&selectors);
+                (selectors, specificity)
+            })
+            .collect()
     }
 
     /// 解析声明
@@ -305,6 +396,11 @@ impl StyleSheet {
             Selector::Attribute(_attr_name, _attr_value) => {
                 // 简化实现：属性选择器匹配
                 // 实际应该检查节点的属性，这里暂时返回false
+                false
+            }
+            Selector::PseudoClass(_pseudo) => {
+                // 简化实现：在静态匹配模式下始终返回false
+                // 完整匹配在 StyleMatcher 中处理
                 false
             }
             Selector::Descendant(_, descendant) => {
@@ -383,5 +479,29 @@ mod tests {
 
         assert!(id_rule.specificity > class_rule.specificity);
         assert!(class_rule.specificity > tag_rule.specificity);
+    }
+
+    #[test]
+    fn test_selector_parse_pseudo_class() {
+        let selectors = Selector::parse(":hover");
+        assert_eq!(selectors, vec![Selector::PseudoClass("hover".to_string())]);
+    }
+
+    #[test]
+    fn test_selector_parse_nth_child() {
+        let selectors = Selector::parse(":nth-child(2)");
+        assert_eq!(selectors, vec![Selector::PseudoClass("nth-child(2)".to_string())]);
+    }
+
+    #[test]
+    fn test_pseudo_class_specificity() {
+        let pseudo_rule = StyleRule::new(vec![Selector::PseudoClass("hover".to_string())], vec![]);
+        let tag_rule = StyleRule::new(vec![Selector::Tag("div".to_string())], vec![]);
+        let class_rule = StyleRule::new(vec![Selector::Class("container".to_string())], vec![]);
+
+        // 伪类优先级等于类选择器
+        assert_eq!(pseudo_rule.specificity, class_rule.specificity);
+        // 伪类优先级高于标签选择器
+        assert!(pseudo_rule.specificity > tag_rule.specificity);
     }
 }
