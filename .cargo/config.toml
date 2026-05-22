@@ -1,0 +1,8 @@
+[source.crates-io]
+registry = "sparse+https://index.crates.io/"
+
+[net]
+retry = 3
+
+[http]
+timeout = 120
