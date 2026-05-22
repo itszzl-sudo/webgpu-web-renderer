@@ -6,11 +6,13 @@ use crate::layout::{LayoutItem, LayoutEnv};
 use wgpu::{Device, Queue, Buffer};
 use std::sync::Arc;
 
+#[allow(dead_code)]
 const COMPUTE_SHADER_SOURCE: &str = include_str!("compute.wgsl");
 
 /// GPU 布局计算器
+#[allow(dead_code)]
 pub struct LayoutCompute {
-    device: Arc<Device>,
+    _device: Arc<Device>,
     queue: Arc<Queue>,
     items_buffer: Buffer,
     env_buffer: Buffer,
@@ -36,7 +38,7 @@ impl LayoutCompute {
         });
 
         Ok(LayoutCompute {
-            device,
+            _device: device,
             queue,
             items_buffer,
             env_buffer,

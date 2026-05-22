@@ -1,5 +1,5 @@
-use crate::css::parser::{StyleRule, StyleSheet, Declaration, Selector};
-use crate::dom::tree::{DomTree, DomNode};
+use crate::css::parser::{StyleRule, StyleSheet, Selector};
+use crate::dom::tree::DomTree;
 use std::collections::HashMap;
 
 /// 计算的样式

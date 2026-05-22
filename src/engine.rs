@@ -507,7 +507,7 @@ impl WebNativeBridge for Engine {
             let mut form_data = HashMap::new();
 
             // 查找表单内的输入元素
-            if let Some(form_id) = self.query(form_selector) {
+            if let Some(_form_id) = self.query(form_selector) {
                 // 查找所有输入元素 (简化实现)
                 for input_id in self.query_all(&format!("{} input, {} select, {} textarea", form_selector, form_selector, form_selector)) {
                     if let Some(name) = self.get_attr(input_id, "name") {

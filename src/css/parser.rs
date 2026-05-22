@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 /// CSS 声明
 #[derive(Debug, Clone, PartialEq)]
 pub struct Declaration {
@@ -304,7 +302,7 @@ impl StyleSheet {
             Selector::Tag(selector_tag) => tag.map_or(false, |t| t == selector_tag),
             Selector::Id(selector_id) => id.map_or(false, |i| i == selector_id),
             Selector::Class(selector_class) => classes.contains(&selector_class.as_str()),
-            Selector::Attribute(attr_name, attr_value) => {
+            Selector::Attribute(_attr_name, _attr_value) => {
                 // 简化实现：属性选择器匹配
                 // 实际应该检查节点的属性，这里暂时返回false
                 false

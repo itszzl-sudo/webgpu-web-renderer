@@ -310,20 +310,6 @@ impl<'a> HtmlParser<'a> {
         true
     }
     
-    /// 检查并消费字符串
-    fn peek_string(&mut self, s: &str) -> bool {
-        if !self.check_string(s) {
-            return false;
-        }
-        
-        // 确认匹配，消费字符
-        for _ in s.chars() {
-            self.input.next();
-        }
-        
-        true
-    }
-
     /// 期望特定字符
     fn expect(&mut self, ch: char) -> Result<(), String> {
         match self.input.next() {

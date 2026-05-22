@@ -1,18 +1,15 @@
 use crate::dom::tree::DomTree;
 use crate::css::matcher::{StyleMatcher, ComputedStyle, StyleValue};
-use crate::css::parser::StyleSheet;
 use crate::layout::{LayoutItem, LayoutEnv};
 
 pub struct LayoutConverter {
     style_matcher: StyleMatcher,
-    layout_env: LayoutEnv,
 }
 
 impl LayoutConverter {
-    pub fn new(style_matcher: StyleMatcher, layout_env: LayoutEnv) -> Self {
+    pub fn new(style_matcher: StyleMatcher, _layout_env: LayoutEnv) -> Self {
         LayoutConverter {
             style_matcher,
-            layout_env,
         }
     }
 
@@ -50,7 +47,7 @@ impl LayoutConverter {
 
     fn node_to_layout_item(
         &self,
-        node: &crate::dom::tree::DomNode,
+        _node: &crate::dom::tree::DomNode,
         node_id: usize,
         computed_style: &ComputedStyle,
         depth: u32,
@@ -834,6 +831,7 @@ impl LayoutConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::css::parser::StyleSheet;
 
     #[test]
     fn test_convert_basic_dimensions() {
