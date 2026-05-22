@@ -3,7 +3,7 @@ use crate::dom::tree::DomTree;
 use crate::dom::parser::HtmlParser;
 use crate::css::parser::StyleSheet;
 use crate::css::matcher::StyleMatcher;
-use crate::layout::{LayoutItem, LayoutEnv, LayoutConverter, CpuLayoutCompute};
+use crate::layout::{LayoutItem, LayoutEnv, LayoutConverter, LayoutCompute, CpuLayoutCompute};
 use crate::renderer::pipeline::RenderPipelineWrapper;
 use crate::network::HttpResponse;
 use image::{RgbaImage, ImageFormat};
@@ -92,6 +92,7 @@ pub struct Engine {
     style_matcher: Option<StyleMatcher>,
     layout_items: Vec<LayoutItem>,
     render_pipeline: Option<RenderPipelineWrapper>,
+    layout_compute: Option<LayoutCompute>,
     click_handlers: HashMap<usize, Vec<ClickHandler>>,
     form_handlers: HashMap<String, FormHandler>,
     window_open_handlers: Vec<WindowOpenHandler>,
@@ -140,15 +141,41 @@ impl Engine {
             // 转换 DOM 节点到 LayoutItem
             match converter.convert_dom(&self.dom_tree) {
                 Ok(items) => {
+                    let item_count = items.len();
                     self.layout_items = items;
 
-                    // 执行 CPU 布局计算
-                    CpuLayoutCompute::compute(&mut self.layout_items, &env);
+                    // 尝试 GPU 布局计算，失败时回退到 CPU
+                    let gpu_used = if let Some(ref lc) = self.layout_compute {
+                        if let Err(e) = lc.update_items(&self.layout_items) {
+                            log::warn!("GPU items upload failed (CPU fallback): {}", e);
+                            false
+                        } else if let Err(e) = lc.update_env(&env) {
+                            log::warn!("GPU env upload failed (CPU fallback): {}", e);
+                            false
+                        } else if let Err(e) = lc.compute(item_count as u32) {
+                            log::warn!("GPU compute failed (CPU fallback): {}", e);
+                            false
+                        } else if let Err(e) = lc.read_results(&mut self.layout_items) {
+                            log::warn!("GPU readback failed (CPU fallback): {}", e);
+                            false
+                        } else {
+                            log::info!("GPU layout compute: {} items", item_count);
+                            true
+                        }
+                    } else {
+                        false
+                    };
+
+                    if !gpu_used {
+                        // CPU 布局计算回退
+                        CpuLayoutCompute::compute(&mut self.layout_items, &env);
+                        log::info!("CPU layout compute: {} items", item_count);
+                    }
 
                     // 计算裁剪矩形（基于父容器 overflow 设置）
                     self.compute_clip_rects();
 
-                    log::info!("Layout computed: {} items", self.layout_items.len());
+                    log::info!("Layout finished: {} items", self.layout_items.len());
                 }
                 Err(e) => {
                     log::error!("Layout conversion failed: {}", e);
@@ -266,6 +293,7 @@ impl WebNativeBridge for Engine {
             style_matcher,
             layout_items: Vec::new(),
             render_pipeline: None,
+            layout_compute: None,
             click_handlers: HashMap::new(),
             form_handlers: HashMap::new(),
             window_open_handlers: Vec::new(),
@@ -502,6 +530,19 @@ impl WebNativeBridge for Engine {
                 return Vec::new();
             }
             self.render_pipeline = Some(pipeline);
+        }
+
+        // 初始化 GPU 布局计算器（首次调用时）
+        if self.layout_compute.is_none() {
+            match LayoutCompute::new(device.clone(), queue.clone()) {
+                Ok(lc) => {
+                    self.layout_compute = Some(lc);
+                    log::info!("GPU layout compute initialized");
+                }
+                Err(e) => {
+                    log::warn!("GPU layout compute init failed (CPU fallback): {}", e);
+                }
+            }
         }
 
         let pipeline = self.render_pipeline.as_mut().unwrap();
