@@ -217,7 +217,7 @@ fn bitmap_to_sdf(bitmap: &[u8], w: usize, h: usize) -> Vec<f32> {
                 for sy in y.saturating_sub(8)..h.min(y + 9) {
                     for sx in x.saturating_sub(8)..w.min(x + 9) {
                         if bitmap[sy * w + sx] <= 128 {
-                            let d = (((sx as f32 - x as f32).powi(2) + (sy as f32 - y as f32).powi(2)).sqrt());
+                            let d = ((sx as f32 - x as f32).powi(2) + (sy as f32 - y as f32).powi(2)).sqrt();
                             min_d = min_d.min(d);
                         }
                     }
@@ -229,7 +229,7 @@ fn bitmap_to_sdf(bitmap: &[u8], w: usize, h: usize) -> Vec<f32> {
                 for sy in y.saturating_sub(8)..h.min(y + 9) {
                     for sx in x.saturating_sub(8)..w.min(x + 9) {
                         if bitmap[sy * w + sx] > 128 {
-                            let d = (((sx as f32 - x as f32).powi(2) + (sy as f32 - y as f32).powi(2)).sqrt());
+                            let d = ((sx as f32 - x as f32).powi(2) + (sy as f32 - y as f32).powi(2)).sqrt();
                             min_d = min_d.min(d);
                         }
                     }

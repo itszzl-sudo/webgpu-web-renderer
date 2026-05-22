@@ -201,7 +201,6 @@ pub struct RenderPipelineWrapper {
     queue: Arc<wgpu::Queue>,
     pipeline: Option<RenderPipeline>,
     bind_group: Option<wgpu::BindGroup>,       // uniform bind group (group 0)
-    texture_bind_group: Option<wgpu::BindGroup>, // texture bind group (group 1)
     uniform_buffer: Option<wgpu::Buffer>,
     texture_manager: TextureManager,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -216,7 +215,6 @@ impl RenderPipelineWrapper {
             queue,
             pipeline: None,
             bind_group: None,
-            texture_bind_group: None,
             uniform_buffer: None,
             texture_manager,
             vertex_buffer: None,
@@ -225,14 +223,14 @@ impl RenderPipelineWrapper {
 
     /// 初始化渲染管线
     pub fn initialize(&mut self, width: u32, height: u32) -> Result<(), String> {
-        // 创建两个 bind group layout: group 0 (uniform) + group 1 (纹理+采样器)
-        let uniform_layout = self.create_uniform_bind_group_layout()?;
-        let texture_layout = self.create_texture_bind_group_layout()?;
-
+        let bind_group_layout = self.create_uniform_bind_group_layout()?;
         self.create_uniform_buffer(width, height)?;
-        self.create_render_pipeline(&[&uniform_layout, &texture_layout])?;
-        self.create_bind_group(&uniform_layout)?;
-        self.create_texture_bind_group(&texture_layout)?;
+
+        // 仅使用 uniform bind group (group 0)，纹理绑定可选
+        let pipeline_layouts = vec![&bind_group_layout];
+
+        self.create_render_pipeline(&pipeline_layouts)?;
+        self.create_bind_group(&bind_group_layout)?;
 
         Ok(())
     }
@@ -255,33 +253,6 @@ impl RenderPipelineWrapper {
         Ok(layout)
     }
 
-    /// 创建纹理绑定组布局 (group 1)
-    fn create_texture_bind_group_layout(&self) -> Result<wgpu::BindGroupLayout, String> {
-        use std::num::NonZeroU32;
-        let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Texture Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: NonZeroU32::new(16), // 最大 16 个纹理
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        Ok(layout)
-    }
-
     /// 创建绑定组 (group 0)
     fn create_bind_group(&mut self, layout: &wgpu::BindGroupLayout) -> Result<(), String> {
         let buffer = self.uniform_buffer.as_ref().ok_or("Uniform buffer not created")?;
@@ -294,49 +265,6 @@ impl RenderPipelineWrapper {
             }],
         });
         self.bind_group = Some(bind_group);
-        Ok(())
-    }
-
-    /// 创建纹理绑定组 (group 1)
-    fn create_texture_bind_group(&mut self, layout: &wgpu::BindGroupLayout) -> Result<(), String> {
-        let sampler = self.texture_manager.get_sampler();
-        let views: Vec<&wgpu::TextureView> = self.texture_manager.all_views();
-
-        if views.is_empty() {
-            // 无纹理时创建一个空的绑定组
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Texture Bind Group (empty)"),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureViewArray(&[]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ],
-            });
-            self.texture_bind_group = Some(bind_group);
-            return Ok(());
-        }
-
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Texture Bind Group"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureViewArray(&views),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-        self.texture_bind_group = Some(bind_group);
         Ok(())
     }
 
@@ -569,7 +497,6 @@ impl RenderPipelineWrapper {
 
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.set_bind_group(1, self.texture_bind_group.as_ref().unwrap(), &[]);
 
             for (i, (_, clip_rect, _)) in draw_items.iter().enumerate() {
                 // 设置裁剪矩形

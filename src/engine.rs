@@ -271,18 +271,10 @@ impl Engine {
 
     /// Flexbox 布局计算 — 找出所有 flex 容器并对其子元素排布
     fn compute_flex_layout(&mut self) {
-        // 建立 dom_id → 索引映射
-        let idx_map: std::collections::HashMap<usize, usize> = self.layout_items.iter()
-            .enumerate()
-            .map(|(i, it)| (it.dom_id as usize, i))
-            .collect();
-
         // 收集 flex 容器的数据 (先读后写，避免借用冲突)
         struct FlexContainer {
-            container_idx: usize,
             child_indices: Vec<usize>,
             flex_dir: u32,
-            flex_wrap: u32,
             justify: u32,
             align: u32,
             gap: f32,
@@ -320,10 +312,8 @@ impl Engine {
             let available_main = if is_row { container.size[0] } else { container.size[1] };
 
             flex_containers.push(FlexContainer {
-                container_idx,
                 child_indices,
                 flex_dir: container.flex_direction,
-                flex_wrap: container.flex_wrap,
                 justify: container.justify_content,
                 align: container.align_items,
                 gap: container.gap,
@@ -364,7 +354,7 @@ impl Engine {
 
             // 分配空间
             let mut main_offset = 0.0;
-            for (pos, &idx) in sorted.iter().enumerate() {
+            for (_pos, &idx) in sorted.iter().enumerate() {
                 let basis = self.layout_items[idx].flex_basis.max(0.0);
                 let base_main = if is_row {
                     self.layout_items[idx].size[0].max(basis)
@@ -668,7 +658,7 @@ impl Engine {
         // 初始化动画状态（基于 CSS animation 属性）
         if self.animation_states.is_empty() && !self.stylesheet.keyframes.is_empty() {
             for item in &self.layout_items {
-                let dom_id = item.dom_id as usize;
+                let _dom_id = item.dom_id as usize;
                 for (name, _) in &self.stylesheet.keyframes {
                     self.animation_states.push(AnimState::new(name));
                     break; // 简化：每个元素只绑定第一个动画
