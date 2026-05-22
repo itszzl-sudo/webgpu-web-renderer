@@ -18,6 +18,70 @@ type ClickHandler = Rc<RefCell<dyn FnMut(f32, f32)>>;
 type FormHandler = Rc<RefCell<dyn FnMut(HashMap<String, String>)>>;
 type WindowOpenHandler = Rc<RefCell<dyn FnMut(&str) -> bool>>;
 
+/// HTML 标签默认样式表 (User Agent Stylesheet)
+const UA_STYLESHEET: &str = r#"
+/* ── 块级元素 ── */
+div, p, h1, h2, h3, h4, h5, h6, ul, ol, li,
+section, header, footer, nav, article, aside, main,
+figure, figcaption, dl, dt, dd, blockquote, pre,
+form, fieldset, details, summary { display: block; }
+
+/* ── 内联元素 ── */
+span, a, strong, em, b, i, u, small, code, label,
+abbr, cite, dfn, kbd, mark, q, s, sub, sup, time, var { display: inline; }
+
+/* ── 内联块级元素 ── */
+img, input, button, textarea, select { display: inline-block; }
+
+/* ── 标题 ── */
+h1 { font-size: 2em; margin: 0.67em 0; font-weight: bold; }
+h2 { font-size: 1.5em; margin: 0.75em 0; font-weight: bold; }
+h3 { font-size: 1.17em; margin: 0.83em 0; font-weight: bold; }
+h4 { font-size: 1em; margin: 1.12em 0; font-weight: bold; }
+h5 { font-size: 0.83em; margin: 1.5em 0; font-weight: bold; }
+h6 { font-size: 0.67em; margin: 1.67em 0; font-weight: bold; }
+
+/* ── 段落 ── */
+p { margin: 1em 0; }
+
+/* ── 列表 ── */
+ul, ol { padding-left: 40px; }
+li { display: list-item; }
+
+/* ── 链接 ── */
+a { color: blue; text-decoration: underline; cursor: pointer; }
+
+/* ── 行内代码 / 预格式化 ── */
+pre { font-family: monospace; white-space: pre; }
+code { font-family: monospace; }
+
+/* ── 页面主体 ── */
+body { margin: 8px; display: block; }
+
+/* ── 水平分割线 ── */
+hr { display: block; margin: 0.5em auto; border-style: inset; border-width: 1px; }
+
+/* ── 表单控件 ── */
+input { padding: 1px; border-width: 1px; }
+button { padding: 1px 6px; border-width: 1px; cursor: pointer; }
+textarea { padding: 2px; border-width: 1px; }
+select { border-width: 1px; }
+label { cursor: default; }
+
+/* ── 表格 ── */
+table { display: table; }
+tr { display: table-row; }
+td, th { display: table-cell; padding: 1px; }
+th { font-weight: bold; text-align: center; }
+
+/* ── 图片 ── */
+img { max-width: 100%; }
+
+/* ── 引用 ── */
+blockquote { margin: 1em 40px; }
+figcaption { display: block; }
+"#;
+
 pub struct Engine {
     width: u32,
     height: u32,
@@ -63,14 +127,6 @@ impl Engine {
 
         log::info!("WebGPU initialized successfully");
         Ok(())
-    }
-
-    /// 解析 CSS 并更新样式表
-    fn parse_css(&mut self, css_text: &str) {
-        self.stylesheet = StyleSheet::parse(css_text);
-        self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
-        // 重新计算布局
-        self.update_layout();
     }
 
     /// 更新布局
@@ -196,8 +252,9 @@ impl WebNativeBridge for Engine {
     where
         Self: Sized,
     {
-        let stylesheet = StyleSheet::new();
-        let style_matcher = Some(StyleMatcher::new(stylesheet.clone()));
+        // 解析 UA 默认样式表
+        let ua_stylesheet = StyleSheet::parse(UA_STYLESHEET);
+        let style_matcher = Some(StyleMatcher::new(ua_stylesheet.clone()));
 
         Engine {
             width,
@@ -205,7 +262,7 @@ impl WebNativeBridge for Engine {
             device: None,
             queue: None,
             dom_tree: DomTree::new(),
-            stylesheet,
+            stylesheet: ua_stylesheet,
             style_matcher,
             layout_items: Vec::new(),
             render_pipeline: None,
@@ -387,8 +444,15 @@ impl WebNativeBridge for Engine {
     }
 
     fn set_css(&mut self, css_text: &str) {
-        self.parse_css(css_text);
-        log::info!("CSS rules updated");
+        // 合并 UA 默认样式和用户样式
+        let mut combined = StyleSheet::parse(UA_STYLESHEET);
+        let user_rules = StyleSheet::parse(css_text);
+        combined.rules.extend(user_rules.rules);
+        self.stylesheet = combined;
+        self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
+        // 重新计算布局
+        self.update_layout();
+        log::info!("CSS rules updated (UA + user)");
     }
 
     fn set_style(&mut self, selector: &str, property: &str, value: &str) {
@@ -409,9 +473,11 @@ impl WebNativeBridge for Engine {
     }
 
     fn clear_css(&mut self) {
-        self.stylesheet = StyleSheet::new();
+        // 重置到仅 UA 默认样式
+        self.stylesheet = StyleSheet::parse(UA_STYLESHEET);
         self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
-        log::info!("CSS cleared");
+        self.update_layout();
+        log::info!("CSS cleared (UA defaults retained)");
     }
 
     fn render(&mut self) -> Vec<u8> {
