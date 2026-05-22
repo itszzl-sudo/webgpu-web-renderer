@@ -5,6 +5,7 @@ use crate::css::parser::StyleSheet;
 use crate::css::matcher::StyleMatcher;
 use crate::layout::{LayoutItem, LayoutEnv, LayoutConverter, LayoutCompute, CpuLayoutCompute};
 use crate::renderer::pipeline::RenderPipelineWrapper;
+use crate::animation::{AnimState, interpolate_keyframes};
 use crate::network::HttpResponse;
 use image::{RgbaImage, ImageFormat};
 use std::collections::HashMap;
@@ -105,6 +106,9 @@ pub struct Engine {
     form_handlers: HashMap<String, FormHandler>,
     window_open_handlers: Vec<WindowOpenHandler>,
     current_url: String,
+    // ── 动画字段 ──
+    animation_time: f32,
+    animation_states: Vec<AnimState>,
     // ── 增量更新字段 ──
     dirty_flags: u8,               // 脏标记位掩码
     pending_html: Option<String>,  // 待提交的 HTML
@@ -655,6 +659,56 @@ impl Engine {
         }
     }
 
+    // ── 动画 ──
+
+    /// 推进动画时间，更新动画状态
+    pub fn advance_animation(&mut self, dt: f32) {
+        self.animation_time += dt;
+
+        // 初始化动画状态（基于 CSS animation 属性）
+        if self.animation_states.is_empty() && !self.stylesheet.keyframes.is_empty() {
+            for item in &self.layout_items {
+                let dom_id = item.dom_id as usize;
+                for (name, _) in &self.stylesheet.keyframes {
+                    self.animation_states.push(AnimState::new(name));
+                    break; // 简化：每个元素只绑定第一个动画
+                }
+            }
+        }
+
+        // 推进所有动画
+        for state in &mut self.animation_states {
+            state.advance(dt);
+        }
+
+        // 应用动画值到布局项
+        if !self.animation_states.is_empty() && !self.layout_items.is_empty() {
+            for (i, state) in self.animation_states.iter().enumerate() {
+                if !state.running && state.progress() == 0.0 {
+                    continue;
+                }
+                if i >= self.layout_items.len() {
+                    break;
+                }
+                let p = state.progress();
+                if let Some(keyframes) = self.stylesheet.keyframes.get(&state.name) {
+                    // 尝试插值可动画属性
+                    if let Some(val) = interpolate_keyframes(keyframes, "opacity", p) {
+                        if let Ok(v) = val.trim_end_matches("px").parse::<f32>() {
+                            self.layout_items[i].opacity = v.clamp(0.0, 1.0);
+                        }
+                    }
+                    if let Some(val) = interpolate_keyframes(keyframes, "width", p) {
+                        self.layout_items[i].size[0] = val.trim_end_matches("px").parse::<f32>().unwrap_or(self.layout_items[i].size[0]);
+                    }
+                    if let Some(val) = interpolate_keyframes(keyframes, "height", p) {
+                        self.layout_items[i].size[1] = val.trim_end_matches("px").parse::<f32>().unwrap_or(self.layout_items[i].size[1]);
+                    }
+                }
+            }
+        }
+    }
+
     /// 将 RGBA 数据转换为 PNG 字节
     fn rgba_to_png(&self, rgba_data: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let image = RgbaImage::from_raw(width, height, rgba_data)
@@ -767,6 +821,8 @@ impl WebNativeBridge for Engine {
             form_handlers: HashMap::new(),
             window_open_handlers: Vec::new(),
             current_url: String::new(),
+            animation_time: 0.0,
+            animation_states: Vec::new(),
             dirty_flags: DIRTY_NONE,
             pending_html: None,
             pending_css: None,
@@ -1047,7 +1103,7 @@ impl WebNativeBridge for Engine {
         let texture_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // 更新 uniform 数据
-        pipeline.update_uniforms(self.width, self.height);
+        pipeline.update_uniforms(self.width, self.height, self.animation_time);
 
         // 使用渲染管线绘制布局项
         if let Err(e) = pipeline.render(&texture_view, &self.layout_items, self.width, self.height) {

@@ -370,10 +370,10 @@ impl RenderPipelineWrapper {
     }
 
     /// 更新 Uniform 数据
-    pub fn update_uniforms(&mut self, width: u32, height: u32) {
+    pub fn update_uniforms(&mut self, width: u32, height: u32, time: f32) {
         let uniforms = Uniforms {
             viewport_size: [width as f32, height as f32],
-            time: 0.0,
+            time,
             _pad1: [0.0; 1],
             _pad: [0.0, 0.0],
         };

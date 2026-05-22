@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 /// CSS 声明
 #[derive(Debug, Clone, PartialEq)]
 pub struct Declaration {
@@ -246,16 +248,28 @@ impl StyleRule {
     }
 }
 
+/// CSS 关键帧
+#[derive(Debug, Clone)]
+pub struct Keyframe {
+    /// 关键帧选择器 (0.0~1.0, from=0.0, to=1.0)
+    pub selector: f32,
+    /// 关键帧声明
+    pub declarations: Vec<Declaration>,
+}
+
 /// CSS 样式表
 #[derive(Debug, Clone)]
 pub struct StyleSheet {
     pub rules: Vec<StyleRule>,
+    /// @keyframes 动画定义 (name → keyframes)
+    pub keyframes: HashMap<String, Vec<Keyframe>>,
 }
 
 impl StyleSheet {
     pub fn new() -> Self {
         StyleSheet {
             rules: Vec::new(),
+            keyframes: HashMap::new(),
         }
     }
 
@@ -264,14 +278,21 @@ impl StyleSheet {
         self.rules.push(rule);
     }
 
-    /// 解析 CSS 文本
+/// 解析 CSS 文本
     pub fn parse(css_text: &str) -> Self {
         let mut stylesheet = StyleSheet::new();
 
-        // 简化的 CSS 解析
         let blocks = Self::split_rules(css_text);
 
         for block in blocks {
+            // 检测 @keyframes 规则
+            if block.trim_start().starts_with("@keyframes") {
+                if let Some((name, kf_list)) = Self::parse_keyframes(&block) {
+                    stylesheet.keyframes.insert(name, kf_list);
+                }
+                continue;
+            }
+
             if let Some((selectors_part, declarations_part)) = Self::parse_rule_block(&block) {
                 let selector_groups = Self::parse_selectors(&selectors_part);
                 let declarations = Self::parse_declarations(&declarations_part);
@@ -288,6 +309,74 @@ impl StyleSheet {
         }
 
         stylesheet
+    }
+
+    /// 解析 @keyframes 规则
+    /// 输入: "@keyframes slide { 0% { left: 0px; } 100% { left: 100px; } }"
+    /// 输出: ("slide", [Keyframe{selector:0.0, ...}, Keyframe{selector:1.0, ...}])
+    fn parse_keyframes(block: &str) -> Option<(String, Vec<Keyframe>)> {
+        let block = block.trim();
+        // 提取名称: "@keyframes name {" → 去掉 "@keyframes " 前缀
+        let after_at = block.strip_prefix("@keyframes ")?;
+        let name_end = after_at.find('{')?;
+        let name = after_at[..name_end].trim().to_string();
+
+        if name.is_empty() {
+            return None;
+        }
+
+        // 提取 {} 内的所有内容
+        let body_start = after_at.find('{')?;
+        let body_end = after_at.rfind('}')?;
+        let body = &after_at[body_start + 1..body_end].trim();
+
+        if body.is_empty() {
+            return Some((name, Vec::new()));
+        }
+
+        // 解析内部的关键帧选择器块: "0% { left: 0px; } 100% { left: 100px; }"
+        // 用 split_rules 的相同逻辑拆分内部块
+        let mut kf_list = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0u32;
+
+        for ch in body.chars() {
+            current.push(ch);
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    // 提取选择器和声明
+                    let brace_start = current.find('{')?;
+                    let selector_str = current[..brace_start].trim();
+                    let decl_str = current[brace_start + 1..].trim_end_matches('}').trim();
+
+                    let selector = if selector_str == "from" {
+                        0.0
+                    } else if selector_str == "to" {
+                        1.0
+                    } else if let Some(pct) = selector_str.strip_suffix('%') {
+                        pct.trim().parse::<f32>().unwrap_or(0.0) / 100.0
+                    } else {
+                        selector_str.parse::<f32>().unwrap_or(0.0)
+                    };
+
+                    let decls = Self::parse_declarations(decl_str);
+                    kf_list.push(Keyframe {
+                        selector: selector.clamp(0.0, 1.0),
+                        declarations: decls,
+                    });
+
+                    current.clear();
+                }
+            }
+        }
+
+        // 按选择器排序
+        kf_list.sort_by(|a, b| a.selector.partial_cmp(&b.selector).unwrap_or(std::cmp::Ordering::Equal));
+
+Some((name, kf_list))
     }
 
     /// 分离 CSS 规则块
@@ -327,7 +416,6 @@ impl StyleSheet {
 
     /// 解析选择器
     fn parse_selectors(selectors_part: &str) -> Vec<(Vec<Selector>, u32)> {
-        // 逗号分隔 -> 多个选择器组
         selectors_part.split(',')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -394,13 +482,9 @@ impl StyleSheet {
             Selector::Id(selector_id) => id.map_or(false, |i| i == selector_id),
             Selector::Class(selector_class) => classes.contains(&selector_class.as_str()),
             Selector::Attribute(_attr_name, _attr_value) => {
-                // 简化实现：属性选择器匹配
-                // 实际应该检查节点的属性，这里暂时返回false
                 false
             }
             Selector::PseudoClass(_pseudo) => {
-                // 简化实现：在静态匹配模式下始终返回false
-                // 完整匹配在 StyleMatcher 中处理
                 false
             }
             Selector::Descendant(_, descendant) => {
@@ -503,5 +587,35 @@ mod tests {
         assert_eq!(pseudo_rule.specificity, class_rule.specificity);
         // 伪类优先级高于标签选择器
         assert!(pseudo_rule.specificity > tag_rule.specificity);
+    }
+
+    #[test]
+    fn test_parse_keyframes() {
+        let css = r#"
+            @keyframes slide {
+                0% { left: 0px; opacity: 0; }
+                100% { left: 100px; opacity: 1; }
+            }
+            div { width: 200px; }
+        "#;
+        let stylesheet = StyleSheet::parse(css);
+
+        // 应解析出 keyframes
+        assert!(stylesheet.keyframes.contains_key("slide"));
+        let kf = stylesheet.keyframes.get("slide").unwrap();
+        assert_eq!(kf.len(), 2);
+        assert_eq!(kf[0].selector, 0.0);
+        assert_eq!(kf[1].selector, 1.0);
+
+        // 普通规则也应解析
+        assert_eq!(stylesheet.rules.len(), 1);
+        assert_eq!(stylesheet.rules[0].selectors.len(), 1);
+
+        // from/to 语法
+        let css2 = "@keyframes fade { from { opacity: 0; } to { opacity: 1; } }";
+        let ss2 = StyleSheet::parse(css2);
+        let kf2 = ss2.keyframes.get("fade").unwrap();
+        assert_eq!(kf2[0].selector, 0.0); // from = 0%
+        assert_eq!(kf2[1].selector, 1.0); // to = 100%
     }
 }
