@@ -5,8 +5,10 @@ use crate::css::parser::StyleSheet;
 use crate::css::matcher::StyleMatcher;
 use crate::layout::{LayoutItem, LayoutEnv, LayoutConverter, CpuLayoutCompute};
 use crate::renderer::pipeline::RenderPipelineWrapper;
+use crate::network::HttpResponse;
 use image::{RgbaImage, ImageFormat};
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,6 +31,7 @@ pub struct Engine {
     click_handlers: HashMap<usize, Vec<ClickHandler>>,
     form_handlers: HashMap<String, FormHandler>,
     window_open_handlers: Vec<WindowOpenHandler>,
+    current_url: String,
 }
 
 impl Engine {
@@ -129,6 +132,7 @@ impl WebNativeBridge for Engine {
             click_handlers: HashMap::new(),
             form_handlers: HashMap::new(),
             window_open_handlers: Vec::new(),
+            current_url: String::new(),
         }
     }
 
@@ -537,43 +541,98 @@ impl WebNativeBridge for Engine {
         (self.width, self.height)
     }
 
-    fn navigate(&mut self, _url: &str) -> Result<(), String> {
-        // TODO: 实现导航
+    fn navigate(&mut self, url: &str) -> Result<(), String> {
+        // 更新当前 URL
+        self.current_url = url.to_string();
+        log::info!("Navigated to: {}", url);
+        // TODO: 实际获取 URL 内容并解析 HTML
         Ok(())
     }
 
     fn current_url(&self) -> String {
-        // TODO: 返回当前 URL
-        String::new()
+        self.current_url.clone()
     }
 
-    fn http_get(&mut self, _url: &str) -> Result<crate::network::HttpResponse, String> {
-        // TODO: 实现 HTTP GET
-        Err(String::from("Not implemented"))
+    fn http_get(&mut self, url: &str) -> Result<HttpResponse, String> {
+        log::info!("HTTP GET: {}", url);
+        let response = ureq::get(url)
+            .call()
+            .map_err(|e| format!("HTTP GET failed: {}", e))?;
+
+        let status_code = response.status();
+        let mut resp = HttpResponse::new(status_code);
+
+        // 复制响应头
+        for header_name in response.headers_names() {
+            if let Some(value) = response.header(&header_name) {
+                resp.set_header(&header_name, value);
+            }
+        }
+
+        // 读取响应体
+        let mut body: Vec<u8> = Vec::new();
+        response.into_reader().read_to_end(&mut body)
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+        resp.set_body(body);
+
+        log::info!("HTTP GET completed: status={}", status_code);
+        Ok(resp)
     }
 
     fn http_post(
         &mut self,
-        _url: &str,
-        _body: &[u8],
-        _content_type: &str,
-    ) -> Result<crate::network::HttpResponse, String> {
-        // TODO: 实现 HTTP POST
-        Err(String::from("Not implemented"))
+        url: &str,
+        body: &[u8],
+        content_type: &str,
+    ) -> Result<HttpResponse, String> {
+        log::info!("HTTP POST: {} ({} bytes)", url, body.len());
+        let response = ureq::post(url)
+            .set("Content-Type", content_type)
+            .send_bytes(body)
+            .map_err(|e| format!("HTTP POST failed: {}", e))?;
+
+        let status_code = response.status();
+        let mut resp = HttpResponse::new(status_code);
+
+        for header_name in response.headers_names() {
+            if let Some(value) = response.header(&header_name) {
+                resp.set_header(&header_name, value);
+            }
+        }
+
+        let mut response_body: Vec<u8> = Vec::new();
+        response.into_reader().read_to_end(&mut response_body)
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+        resp.set_body(response_body);
+
+        log::info!("HTTP POST completed: status={}", status_code);
+        Ok(resp)
     }
 
-    fn download_file(&mut self, _url: &str, _path: &str) -> Result<u64, String> {
-        // TODO: 实现文件下载
-        Err(String::from("Not implemented"))
+    fn download_file(&mut self, url: &str, path: &str) -> Result<u64, String> {
+        log::info!("Downloading: {} -> {}", url, path);
+        let response = self.http_get(url)?;
+        let data = response.body;
+        std::fs::write(path, &data)
+            .map_err(|e| format!("Failed to write file '{}': {}", path, e))?;
+        let size = data.len() as u64;
+        log::info!("Download completed: {} bytes -> {}", size, path);
+        Ok(size)
     }
 
-    fn write_file(&mut self, _path: &str, _data: &[u8]) -> Result<(), String> {
-        // TODO: 实现文件写入
-        Err(String::from("Not implemented"))
+    fn write_file(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
+        log::info!("Writing file: {} ({} bytes)", path, data.len());
+        std::fs::write(path, data)
+            .map_err(|e| format!("Failed to write file '{}': {}", path, e))?;
+        log::info!("File written: {}", path);
+        Ok(())
     }
 
-    fn read_file(&mut self, _path: &str) -> Result<Vec<u8>, String> {
-        // TODO: 实现文件读取
-        Err(String::from("Not implemented"))
+    fn read_file(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        log::info!("Reading file: {}", path);
+        let data = std::fs::read(path)
+            .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+        log::info!("File read: {} ({} bytes)", path, data.len());
+        Ok(data)
     }
 }
