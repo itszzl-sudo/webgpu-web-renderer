@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cool Transform Effects</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0a0e27 0%, #1a1423 50%, #2d1b4e 100%);
+            overflow: hidden;
+            position: relative;
+        }
+        
+        /* Particle Background */
+        .particle-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .particle {
+            position: absolute;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(100, 255, 218, 0.8) 0%, rgba(100, 255, 218, 0) 70%);
+            animation: float 8s infinite ease-in-out;
+        }
+        
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(0) translateX(0) scale(1);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+            }
+            90% {
+                opacity: 1;
+            }
+            50% {
+                transform: translateY(-100px) translateX(50px) scale(1.5);
+            }
+        }
+        
+        /* Main Geometry Container */
+        .scene {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80vmin;
+            height: 80vmin;
+            perspective: 1000px;
+        }
+        
+        /* Central Sphere */
+        .sphere {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 30vmin;
+            height: 30vmin;
+            transform: translate(-50%, -50%);
+            background: radial-gradient(circle at 30% 30%, #ff6ec7, #7c3aed, #3b82f6);
+            border-radius: 50%;
+            box-shadow: 
+                inset 0 0 40px rgba(255, 255, 255, 0.3),
+                0 0 60px rgba(124, 58, 237, 0.6),
+                0 0 120px rgba(59, 130, 246, 0.4);
+            animation: pulse 3s infinite ease-in-out, rotate 20s infinite linear;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                transform: translate(-50%, -50%) scale(1);
+            }
+            50% {
+                transform: translate(-50%, -50%) scale(1.1);
+            }
+        }
+        
+        @keyframes rotate {
+            from {
+                transform: translate(-50%, -50%) rotate(0deg);
+            }
+            to {
+                transform: translate(-50%, -50%) rotate(360deg);
+            }
+        }
+        
+        /* Orbiting Rings */
+        .ring {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            border: 3px solid;
+            border-radius: 50%;
+            transform-style: preserve-3d;
+        }
+        
+        .ring-1 {
+            width: 45vmin;
+            height: 45vmin;
+            border-color: rgba(255, 110, 199, 0.6);
+            transform: translate(-50%, -50%) rotateX(60deg) rotateZ(0deg);
+            animation: orbit1 15s infinite linear;
+        }
+        
+        .ring-2 {
+            width: 55vmin;
+            height: 55vmin;
+            border-color: rgba(124, 58, 237, 0.5);
+            transform: translate(-50%, -50%) rotateX(30deg) rotateY(45deg);
+            animation: orbit2 20s infinite linear reverse;
+        }
+        
+        .ring-3 {
+            width: 65vmin;
+            height: 65vmin;
+            border-color: rgba(59, 130, 246, 0.4);
+            transform: translate(-50%, -50%) rotateX(-20deg) rotateY(60deg);
+            animation: orbit3 25s infinite linear;
+        }
+        
+        @keyframes orbit1 {
+            from {
+                transform: translate(-50%, -50%) rotateX(60deg) rotateZ(0deg);
+            }
+            to {
+                transform: translate(-50%, -50%) rotateX(60deg) rotateZ(360deg);
+            }
+        }
+        
+        @keyframes orbit2 {
+            from {
+                transform: translate(-50%, -50%) rotateX(30deg) rotateY(45deg) rotateZ(0deg);
+            }
+            to {
+                transform: translate(-50%, -50%) rotateX(30deg) rotateY(45deg) rotateZ(360deg);
+            }
+        }
+        
+        @keyframes orbit3 {
+            from {
+                transform: translate(-50%, -50%) rotateX(-20deg) rotateY(60deg) rotateZ(0deg);
+            }
+            to {
+                transform: translate(-50%, -50%) rotateX(-20deg) rotateY(60deg) rotateZ(360deg);
+            }
+        }
+        
+        /* Orbiting Gems */
+        .gem {
+            position: absolute;
+            width: 2vmin;
+            height: 2vmin;
+            background: linear-gradient(135deg, #fff 0%, #64ffda 50%, #3b82f6 100%);
+            clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%);
+            box-shadow: 0 0 20px rgba(100, 255, 218, 0.8);
+        }
+        
+        .gem-1 {
+            top: 50%;
+            left: 50%;
+            animation: gemOrbit1 10s infinite linear;
+        }
+        
+        .gem-2 {
+            top: 50%;
+            left: 50%;
+            animation: gemOrbit2 12s infinite linear;
+        }
+        
+        .gem-3 {
+            top: 50%;
+            left: 50%;
+            animation: gemOrbit3 14s infinite linear;
+        }
+        
+        @keyframes gemOrbit1 {
+            0% {
+                transform: translate(-50%, -50%) rotate(0deg) translateX(22.5vmin) rotate(0deg) scale(1);
+            }
+            50% {
+                transform: translate(-50%, -50%) rotate(180deg) translateX(22.5vmin) rotate(-180deg) scale(1.5);
+            }
+            100% {
+                transform: translate(-50%, -50%) rotate(360deg) translateX(22.5vmin) rotate(-360deg) scale(1);
+            }
+        }
+        
+        @keyframes gemOrbit2 {
+            0% {
+                transform: translate(-50%, -50%) rotate(60deg) translateX(27.5vmin) rotate(-60deg) scale(1.2);
+            }
+            50% {
+                transform: translate(-50%, -50%) rotate(240deg) translateX(27.5vmin) rotate(-240deg) scale(0.8);
+            }
+            100% {
+                transform: translate(-50%, -50%) rotate(420deg) translateX(27.5vmin) rotate(-420deg) scale(1.2);
+            }
+        }
+        
+        @keyframes gemOrbit3 {
+            0% {
+                transform: translate(-50%, -50%) rotate(-30deg) translateX(32.5vmin) rotate(30deg) scale(0.9);
+            }
+            50% {
+                transform: translate(-50%, -50%) rotate(150deg) translateX(32.5vmin) rotate(-150deg) scale(1.6);
+            }
+            100% {
+                transform: translate(-50%, -50%) rotate(330deg) translateX(32.5vmin) rotate(-330deg) scale(0.9);
+            }
+        }
+        
+        /* Corner Shapes */
+        .corner-shape {
+            position: fixed;
+            width: 20vmin;
+            height: 20vmin;
+        }
+        
+        .top-left {
+            top: 0;
+            left: 0;
+            background: linear-gradient(135deg, rgba(255, 110, 199, 0.3) 0%, transparent 60%);
+            clip-path: polygon(0 0, 100% 0, 0 100%);
+            animation: morph1 6s infinite ease-in-out;
+        }
+        
+        .top-right {
+            top: 0;
+            right: 0;
+            background: linear-gradient(225deg, rgba(124, 58, 237, 0.3) 0%, transparent 60%);
+            clip-path: polygon(0 0, 100% 0, 100% 100%);
+            animation: morph2 7s infinite ease-in-out;
+        }
+        
+        .bottom-left {
+            bottom: 0;
+            left: 0;
+            background: linear-gradient(45deg, rgba(59, 130, 246, 0.3) 0%, transparent 60%);
+            clip-path: polygon(0 0, 0 100%, 100% 100%);
+            animation: morph3 8s infinite ease-in-out;
+        }
+        
+        .bottom-right {
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(315deg, rgba(100, 255, 218, 0.3) 0%, transparent 60%);
+            clip-path: polygon(100% 0, 0 100%, 100% 100%);
+            animation: morph4 9s infinite ease-in-out;
+        }
+        
+        @keyframes morph1 {
+            0%, 100% {
+                transform: rotate(0deg) scale(1);
+            }
+            50% {
+                transform: rotate(15deg) scale(1.2);
+            }
+        }
+        
+        @keyframes morph2 {
+            0%, 100% {
+                transform: rotate(0deg) scale(1);
+            }
+            50% {
+                transform: rotate(-15deg) scale(1.3);
+            }
+        }
+        
+        @keyframes morph3 {
+            0%, 100% {
+                transform: rotate(0deg) scale(1);
+            }
+            50% {
+                transform: rotate(-10deg) scale(1.1);
+            }
+        }
+        
+        @keyframes morph4 {
+            0%, 100% {
+                transform: rotate(0deg) scale(1);
+            }
+            50% {
+                transform: rotate(10deg) scale(1.4);
+            }
+        }
+        
+        /* Floating Hexagons */
+        .hex-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .hexagon {
+            position: absolute;
+            width: 8vmin;
+            height: 4.6vmin;
+            background: linear-gradient(135deg, rgba(255, 110, 199, 0.2), rgba(124, 58, 237, 0.2));
+            clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+            border: 2px solid rgba(100, 255, 218, 0.4);
+        }
+        
+        .hex-1 {
+            top: 15%;
+            left: 10%;
+            animation: hexFloat1 8s infinite ease-in-out;
+        }
+        
+        .hex-2 {
+            top: 25%;
+            right: 15%;
+            animation: hexFloat2 10s infinite ease-in-out;
+        }
+        
+        .hex-3 {
+            bottom: 20%;
+            left: 20%;
+            animation: hexFloat3 9s infinite ease-in-out;
+        }
+        
+        .hex-4 {
+            bottom: 15%;
+            right: 10%;
+            animation: hexFloat4 11s infinite ease-in-out;
+        }
+        
+        @keyframes hexFloat1 {
+            0%, 100% {
+                transform: translateY(0) rotate(0deg) scale(1);
+            }
+            50% {
+                transform: translateY(-30px) rotate(60deg) scale(1.2);
+            }
+        }
+        
+        @keyframes hexFloat2 {
+            0%, 100% {
+                transform: translateY(0) rotate(0deg) scale(1);
+            }
+            50% {
+                transform: translateY(30px) rotate(-45deg) scale(0.9);
+            }
+        }
+        
+        @keyframes hexFloat3 {
+            0%, 100% {
+                transform: translateY(0) rotate(0deg) scale(1);
+            }
+            50% {
+                transform: translateY(-20px) rotate(30deg) scale(1.1);
+            }
+        }
+        
+        @keyframes hexFloat4 {
+            0%, 100% {
+                transform: translateY(0) rotate(0deg) scale(1);
+            }
+            50% {
+                transform: translateY(20px) rotate(-60deg) scale(1.3);
+            }
+        }
+        
+        /* Wave Overlay */
+        .wave {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 30vh;
+            background: linear-gradient(180deg, transparent 0%, rgba(59, 130, 246, 0.1) 100%);
+            clip-path: url(#wavePath);
+            animation: waveMove 4s infinite ease-in-out;
+        }
+        
+        @keyframes waveMove {
+            0%, 100% {
+                transform: translateX(0);
+            }
+            50% {
+                transform: translateX(-10%);
+            }
+        }
+        
+        /* Glow Orbs */
+        .orb {
+            position: fixed;
+            border-radius: 50%;
+            filter: blur(60px);
+            mix-blend-mode: screen;
+            pointer-events: none;
+        }
+        
+        .orb-1 {
+            width: 40vmin;
+            height: 40vmin;
+            background: radial-gradient(circle, rgba(255, 110, 199, 0.4), transparent);
+            top: 20%;
+            left: 20%;
+            animation: orbFloat1 12s infinite ease-in-out;
+        }
+        
+        .orb-2 {
+            width: 35vmin;
+            height: 35vmin;
+            background: radial-gradient(circle, rgba(124, 58, 237, 0.4), transparent);
+            bottom: 25%;
+            right: 15%;
+            animation: orbFloat2 15s infinite ease-in-out;
+        }
+        
+        .orb-3 {
+            width: 30vmin;
+            height: 30vmin;
+            background: radial-gradient(circle, rgba(100, 255, 218, 0.4), transparent);
+            top: 60%;
+            left: 70%;
+            animation: orbFloat3 10s infinite ease-in-out;
+        }
+        
+        @keyframes orbFloat1 {
+            0%, 100% {
+                transform: translate(0, 0) scale(1);
+            }
+            33% {
+                transform: translate(50px, -30px) scale(1.1);
+            }
+            66% {
+                transform: translate(-30px, 40px) scale(0.9);
+            }
+        }
+        
+        @keyframes orbFloat2 {
+            0%, 100% {
+                transform: translate(0, 0) scale(1);
+            }
+            33% {
+                transform: translate(-40px, -50px) scale(1.2);
+            }
+            66% {
+                transform: translate(60px, 20px) scale(0.8);
+            }
+        }
+        
+        @keyframes orbFloat3 {
+            0%, 100% {
+                transform: translate(0, 0) scale(1);
+            }
+            33% {
+                transform: translate(-60px, 30px) scale(0.9);
+            }
+            66% {
+                transform: translate(30px, -40px) scale(1.1);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Particle Background -->
+    <div class="particle-container" id="particles"></div>
+    
+    <!-- Glow Orbs -->
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    
+    <!-- Corner Shapes -->
+    <div class="corner-shape top-left"></div>
+    <div class="corner-shape top-right"></div>
+    <div class="corner-shape bottom-left"></div>
+    <div class="corner-shape bottom-right"></div>
+    
+    <!-- Floating Hexagons -->
+    <div class="hex-container">
+        <div class="hexagon hex-1"></div>
+        <div class="hexagon hex-2"></div>
+        <div class="hexagon hex-3"></div>
+        <div class="hexagon hex-4"></div>
+    </div>
+    
+    <!-- Main Scene -->
+    <div class="scene">
+        <!-- Orbiting Rings -->
+        <div class="ring ring-1"></div>
+        <div class="ring ring-2"></div>
+        <div class="ring ring-3"></div>
+        
+        <!-- Central Sphere -->
+        <div class="sphere"></div>
+        
+        <!-- Orbiting Gems -->
+        <div class="gem gem-1"></div>
+        <div class="gem gem-2"></div>
+        <div class="gem gem-3"></div>
+    </div>
+    
+    <!-- Wave SVG -->
+    <svg style="position: absolute; width: 0; height: 0;">
+        <defs>
+            <clipPath id="wavePath" clipPathUnits="objectBoundingBox">
+                <path d="M0,0.5 Q0.25,0 0.5,0.5 T1,0.5 V1 H0 Z" />
+            </clipPath>
+        </defs>
+    </svg>
+    <div class="wave"></div>
+    
+    <script>
+        // Create particles
+        const particleContainer = document.getElementById('particles');
+        const particleCount = 50;
+        
+        for (let i = 0; i < particleCount; i++) {
+            const particle = document.createElement('div');
+            particle.className = 'particle';
+            
+            const size = Math.random() * 8 + 2;
+            particle.style.width = `${size}px`;
+            particle.style.height = `${size}px`;
+            
+            particle.style.left = `${Math.random() * 100}%`;
+            particle.style.top = `${Math.random() * 100}%`;
+            
+            particle.style.animationDelay = `${Math.random() * 8}s`;
+            particle.style.animationDuration = `${Math.random() * 5 + 6}s`;
+            
+            const hue = 180 + Math.random() * 60;
+            particle.style.background = `radial-gradient(circle, hsla(${hue}, 100%, 75%, 0.8) 0%, hsla(${hue}, 100%, 75%, 0) 70%)`;
+            
+            particleContainer.appendChild(particle);
+        }
+        
+        // Interactive effect - add more particles on move
+        document.addEventListener('mousemove', (e) => {
+            if (Math.random() > 0.95) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                
+                const size = Math.random() * 6 + 4;
+                particle.style.width = `${size}px`;
+                particle.style.height = `${size}px`;
+                
+                particle.style.left = `${e.clientX}px`;
+                particle.style.top = `${e.clientY}px`;
+                
+                const hue = 180 + Math.random() * 60;
+                particle.style.background = `radial-gradient(circle, hsla(${hue}, 100%, 75%, 0.9) 0%, hsla(${hue}, 100%, 75%, 0) 70%)`;
+                
+                particleContainer.appendChild(particle);
+                
+                setTimeout(() => particle.remove(), 8000);
+            }
+        });
+    </script>
+</body>
+</html>
