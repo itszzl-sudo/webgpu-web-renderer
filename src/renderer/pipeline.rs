@@ -112,15 +112,12 @@ impl TextureManager {
         self.create_texture_from_rgba(queue, &rgba, 1, 1)
     }
 
-    /// 从 RGBA 数据创建纹理
+/// 从 RGBA 数据创建纹理
     pub fn create_texture_from_rgba(&mut self, queue: &wgpu::Queue, rgba_data: &[u8], width: u32, height: u32) -> u32 {
+        let texture_size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Created Texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+            size: texture_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -140,22 +137,35 @@ impl TextureManager {
             wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: Some(width * 4),
-                rows_per_image: None,
+                rows_per_image: Some(height),
             },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+            texture_size,
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let tex_idx = self.textures.len() as u32 + 1; // 纹理索引从 1 开始
+        let tex_idx = self.textures.len() as u32 + 1; // texture index starts at 1
         self.textures.push(texture);
         self.texture_views.push(view);
-
         tex_idx
+    }
+
+    /// 从图片文件创建纹理
+    pub fn load_from_file(&mut self, queue: &wgpu::Queue, path: &str) -> Option<u32> {
+        let img = match image::open(path) {
+            Ok(img) => img,
+            Err(e) => {
+                log::error!("Failed to load image '{}': {}", path, e);
+                return None;
+            }
+        };
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        Some(self.create_texture_from_rgba(queue, &rgba, w, h))
+    }
+
+    /// 从 RGBA 字节数组创建纹理 (类似 create_texture_from_rgba 但可指定格式)
+    pub fn create_texture(&mut self, queue: &wgpu::Queue, rgba_data: &[u8], width: u32, height: u32) -> u32 {
+        self.create_texture_from_rgba(queue, rgba_data, width, height)
     }
 
     /// 获取纹理视图
@@ -166,6 +176,11 @@ impl TextureManager {
     /// 获取采样器
     pub fn get_sampler(&self) -> &wgpu::Sampler {
         &self.sampler
+    }
+
+    /// 获取所有纹理视图引用
+    pub fn all_views(&self) -> Vec<&wgpu::TextureView> {
+        self.texture_views.iter().collect()
     }
 
     /// 获取纹理数量
@@ -185,7 +200,8 @@ pub struct RenderPipelineWrapper {
     device: Arc<Device>,
     queue: Arc<wgpu::Queue>,
     pipeline: Option<RenderPipeline>,
-    bind_group: Option<wgpu::BindGroup>,
+    bind_group: Option<wgpu::BindGroup>,       // uniform bind group (group 0)
+    texture_bind_group: Option<wgpu::BindGroup>, // texture bind group (group 1)
     uniform_buffer: Option<wgpu::Buffer>,
     texture_manager: TextureManager,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -200,6 +216,7 @@ impl RenderPipelineWrapper {
             queue,
             pipeline: None,
             bind_group: None,
+            texture_bind_group: None,
             uniform_buffer: None,
             texture_manager,
             vertex_buffer: None,
@@ -208,16 +225,20 @@ impl RenderPipelineWrapper {
 
     /// 初始化渲染管线
     pub fn initialize(&mut self, width: u32, height: u32) -> Result<(), String> {
-        let bind_group_layout = self.create_bind_group_layout()?;
+        // 创建两个 bind group layout: group 0 (uniform) + group 1 (纹理+采样器)
+        let uniform_layout = self.create_uniform_bind_group_layout()?;
+        let texture_layout = self.create_texture_bind_group_layout()?;
+
         self.create_uniform_buffer(width, height)?;
-        self.create_render_pipeline(&bind_group_layout)?;
-        self.create_bind_group(&bind_group_layout)?;
+        self.create_render_pipeline(&[&uniform_layout, &texture_layout])?;
+        self.create_bind_group(&uniform_layout)?;
+        self.create_texture_bind_group(&texture_layout)?;
 
         Ok(())
     }
 
-    /// 创建绑定组布局
-    fn create_bind_group_layout(&self) -> Result<wgpu::BindGroupLayout, String> {
+    /// 创建 Uniform 绑定组布局 (group 0)
+    fn create_uniform_bind_group_layout(&self) -> Result<wgpu::BindGroupLayout, String> {
         let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Uniform Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -234,7 +255,34 @@ impl RenderPipelineWrapper {
         Ok(layout)
     }
 
-    /// 创建绑定组
+    /// 创建纹理绑定组布局 (group 1)
+    fn create_texture_bind_group_layout(&self) -> Result<wgpu::BindGroupLayout, String> {
+        use std::num::NonZeroU32;
+        let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Texture Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: NonZeroU32::new(16), // 最大 16 个纹理
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        Ok(layout)
+    }
+
+    /// 创建绑定组 (group 0)
     fn create_bind_group(&mut self, layout: &wgpu::BindGroupLayout) -> Result<(), String> {
         let buffer = self.uniform_buffer.as_ref().ok_or("Uniform buffer not created")?;
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -246,6 +294,49 @@ impl RenderPipelineWrapper {
             }],
         });
         self.bind_group = Some(bind_group);
+        Ok(())
+    }
+
+    /// 创建纹理绑定组 (group 1)
+    fn create_texture_bind_group(&mut self, layout: &wgpu::BindGroupLayout) -> Result<(), String> {
+        let sampler = self.texture_manager.get_sampler();
+        let views: Vec<&wgpu::TextureView> = self.texture_manager.all_views();
+
+        if views.is_empty() {
+            // 无纹理时创建一个空的绑定组
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Texture Bind Group (empty)"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureViewArray(&[]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            });
+            self.texture_bind_group = Some(bind_group);
+            return Ok(());
+        }
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Texture Bind Group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        self.texture_bind_group = Some(bind_group);
         Ok(())
     }
 
@@ -276,7 +367,7 @@ impl RenderPipelineWrapper {
     }
 
     /// 创建渲染管线
-    fn create_render_pipeline(&mut self, bind_group_layout: &wgpu::BindGroupLayout) -> Result<(), String> {
+    fn create_render_pipeline(&mut self, bind_group_layouts: &[&wgpu::BindGroupLayout]) -> Result<(), String> {
         let shader_source = include_str!("render.wgsl");
         let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Render Shader"),
@@ -285,7 +376,7 @@ impl RenderPipelineWrapper {
 
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[bind_group_layout],
+            bind_group_layouts,
             push_constant_ranges: &[],
         });
 
@@ -478,6 +569,7 @@ impl RenderPipelineWrapper {
 
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, bind_group, &[]);
+            render_pass.set_bind_group(1, self.texture_bind_group.as_ref().unwrap(), &[]);
 
             for (i, (_, clip_rect, _)) in draw_items.iter().enumerate() {
                 // 设置裁剪矩形
