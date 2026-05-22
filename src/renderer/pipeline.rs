@@ -57,9 +57,10 @@ pub fn generate_rect_vertices(
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Uniforms {
-    pub viewport_size: [f32; 2],
-    pub time: f32,
-    pub _pad: [f32; 2],
+    pub viewport_size: [f32; 2],  // 8 bytes, offset 0
+    pub time: f32,                 // 4 bytes, offset 8
+    _pad1: [f32; 1],               // 4 bytes padding (align vec2 to 8)
+    pub _pad: [f32; 2],            // 8 bytes, offset 16
 }
 
 impl Default for Uniforms {
@@ -67,7 +68,8 @@ impl Default for Uniforms {
         Uniforms {
             viewport_size: [800.0, 600.0],
             time: 0.0,
-            _pad: [0.0, 0.0],
+            _pad1: [0.0; 1],
+            _pad: [0.0; 2],
         }
     }
 }
@@ -183,6 +185,7 @@ pub struct RenderPipelineWrapper {
     device: Arc<Device>,
     queue: Arc<wgpu::Queue>,
     pipeline: Option<RenderPipeline>,
+    bind_group: Option<wgpu::BindGroup>,
     uniform_buffer: Option<wgpu::Buffer>,
     texture_manager: TextureManager,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -196,6 +199,7 @@ impl RenderPipelineWrapper {
             device,
             queue,
             pipeline: None,
+            bind_group: None,
             uniform_buffer: None,
             texture_manager,
             vertex_buffer: None,
@@ -204,12 +208,44 @@ impl RenderPipelineWrapper {
 
     /// 初始化渲染管线
     pub fn initialize(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let bind_group_layout = self.create_bind_group_layout()?;
         self.create_uniform_buffer(width, height)?;
-        self.create_render_pipeline()?;
+        self.create_render_pipeline(&bind_group_layout)?;
+        self.create_bind_group(&bind_group_layout)?;
 
-        // 创建默认白色纹理
-        self.texture_manager.create_solid_color(&self.queue, 1.0, 1.0, 1.0, 1.0);
+        Ok(())
+    }
 
+    /// 创建绑定组布局
+    fn create_bind_group_layout(&self) -> Result<wgpu::BindGroupLayout, String> {
+        let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Uniform Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        Ok(layout)
+    }
+
+    /// 创建绑定组
+    fn create_bind_group(&mut self, layout: &wgpu::BindGroupLayout) -> Result<(), String> {
+        let buffer = self.uniform_buffer.as_ref().ok_or("Uniform buffer not created")?;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Uniform Bind Group"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        self.bind_group = Some(bind_group);
         Ok(())
     }
 
@@ -228,6 +264,7 @@ impl RenderPipelineWrapper {
         let uniforms = Uniforms {
             viewport_size: [width as f32, height as f32],
             time: 0.0,
+            _pad1: [0.0; 1],
             _pad: [0.0, 0.0],
         };
 
@@ -239,7 +276,7 @@ impl RenderPipelineWrapper {
     }
 
     /// 创建渲染管线
-    fn create_render_pipeline(&mut self) -> Result<(), String> {
+    fn create_render_pipeline(&mut self, bind_group_layout: &wgpu::BindGroupLayout) -> Result<(), String> {
         let shader_source = include_str!("render.wgsl");
         let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Render Shader"),
@@ -248,7 +285,7 @@ impl RenderPipelineWrapper {
 
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -327,6 +364,24 @@ impl RenderPipelineWrapper {
         Ok(())
     }
 
+    /// 获取 Uniform 缓冲区引用
+    pub fn uniform_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.uniform_buffer.as_ref()
+    }
+
+    /// 更新 Uniform 数据
+    pub fn update_uniforms(&mut self, width: u32, height: u32) {
+        let uniforms = Uniforms {
+            viewport_size: [width as f32, height as f32],
+            time: 0.0,
+            _pad1: [0.0; 1],
+            _pad: [0.0, 0.0],
+        };
+        if let Some(buffer) = self.uniform_buffer.as_ref() {
+            self.queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[uniforms]));
+        }
+    }
+
     /// 获取纹理管理器
     pub fn texture_manager(&mut self) -> &mut TextureManager {
         &mut self.texture_manager
@@ -364,6 +419,7 @@ impl RenderPipelineWrapper {
         layout_items: &[LayoutItem],
     ) -> Result<(), String> {
         let pipeline = self.pipeline.as_ref().ok_or("Render pipeline not initialized")?;
+        let bind_group = self.bind_group.as_ref().ok_or("Bind group not created")?;
 
         // 生成顶点数据
         let mut vertices = Vec::new();
@@ -412,6 +468,7 @@ impl RenderPipelineWrapper {
             });
 
             render_pass.set_pipeline(pipeline);
+            render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.draw(0..vertices.len() as u32, 0..1);
         }

@@ -344,6 +344,18 @@ impl WebNativeBridge for Engine {
         let device = self.device.as_ref().unwrap();
         let queue = self.queue.as_ref().unwrap();
 
+        // 初始化渲染管线（首次调用时）
+        if self.render_pipeline.is_none() {
+            let mut pipeline = RenderPipelineWrapper::new(device.clone(), queue.clone());
+            if let Err(e) = pipeline.initialize(self.width, self.height) {
+                log::error!("Pipeline initialization failed: {}", e);
+                return Vec::new();
+            }
+            self.render_pipeline = Some(pipeline);
+        }
+
+        let pipeline = self.render_pipeline.as_mut().unwrap();
+
         // 创建输出纹理
         let texture_extent = wgpu::Extent3d {
             width: self.width,
@@ -364,6 +376,15 @@ impl WebNativeBridge for Engine {
 
         let texture_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // 更新 uniform 数据
+        pipeline.update_uniforms(self.width, self.height);
+
+        // 使用渲染管线绘制布局项
+        if let Err(e) = pipeline.render(&texture_view, &self.layout_items) {
+            log::error!("Pipeline render failed: {}", e);
+            return Vec::new();
+        }
+
         // 创建输出缓冲区
         let bytes_per_row = (self.width * 4) as u32;
         let buffer_size = bytes_per_row * self.height;
@@ -375,33 +396,10 @@ impl WebNativeBridge for Engine {
             mapped_at_creation: false,
         });
 
-        // 创建命令编码器
+        // 创建命令编码器用于复制
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
+            label: Some("Copy Encoder"),
         });
-
-        // 清除纹理为白色背景
-        {
-            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Clear Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 1.0,
-                            g: 1.0,
-                            b: 1.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
 
         // 复制纹理到缓冲区
         encoder.copy_texture_to_buffer(
@@ -436,9 +434,10 @@ impl WebNativeBridge for Engine {
 
         if let Ok(result) = rx.recv() {
             if let Ok(()) = result {
-                let data = buffer_slice.get_mapped_range().to_vec();
-                log::info!("Render completed: {} bytes", data.len());
-                return data;
+                let rgba_data = buffer_slice.get_mapped_range().to_vec();
+                log::info!("Render completed: {} bytes", rgba_data.len());
+                // 转换为 PNG
+                return self.rgba_to_png(rgba_data, self.width, self.height);
             }
         }
 
