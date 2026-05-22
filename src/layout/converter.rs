@@ -103,6 +103,7 @@ let (is_absolute, pos_x, pos_y, rel_left, rel_top) = self.parse_position(compute
         let max_height = self.parse_max_height(computed_style);
         let min_height = self.parse_min_height(computed_style);
         let is_border_box = self.parse_box_sizing(computed_style);
+        let is_inline = self.is_inline_display(computed_style);
 
         let mut layout = LayoutItem::new()
             .with_dom_id(node_id as u32)
@@ -113,6 +114,7 @@ let (is_absolute, pos_x, pos_y, rel_left, rel_top) = self.parse_position(compute
             .with_z_index(z_index)
             .with_flow_type(final_flow_type)
             .with_relative_offset(rel_left, rel_top)
+            .with_inline(is_inline)
             .with_weight(weight)
             .with_flex_shrink(flex_shrink)
             .with_hide_if(is_hide)
@@ -216,6 +218,19 @@ fn parse_shadow_string(&self, shadow_str: &str) -> (u32, [f32; 4], [f32; 2], f32
         match self.style_matcher.get_property(style, "box-sizing") {
             Some(StyleValue::String(s)) => s == "border-box",
             _ => false,
+        }
+    }
+
+    /// 判断是否为 inline 或 inline-block 显示类型
+    fn is_inline_display(&self, style: &ComputedStyle) -> u32 {
+        match self.style_matcher.get_property(style, "display") {
+            Some(StyleValue::String(s)) => {
+                match s.as_str() {
+                    "inline" | "inline-block" => 1,
+                    _ => 0,
+                }
+            }
+            _ => 0,
         }
     }
 

@@ -191,6 +191,12 @@ impl Engine {
                     // Flexbox 布局计算
                     self.compute_flex_layout();
 
+                    // Float 浮动布局
+                    self.compute_float_layout();
+
+                    // Inline 格式化布局
+                    self.compute_inline_layout();
+
                     // 计算裁剪矩形（基于父容器 overflow 设置）
                     self.compute_clip_rects();
 
@@ -420,6 +426,154 @@ impl Engine {
                     }
                     cumulative_shift += extra_per_item;
                 }
+            }
+        }
+    }
+
+    /// Float 浮动布局 — 将 float: left/right 元素定位到容器一侧
+    fn compute_float_layout(&mut self) {
+        // 建立 dom_id → 索引映射
+        let idx_map: std::collections::HashMap<usize, usize> = self.layout_items.iter()
+            .enumerate()
+            .map(|(i, it)| (it.dom_id as usize, i))
+            .collect();
+
+        // 每个容器的浮动跟踪
+        struct FloatTrack {
+            left_max_x: f32,   // 当前左侧浮动最高 x 位置
+            right_min_x: f32,  // 当前右侧浮动最低 x 位置
+            left_max_y: f32,   // 左侧浮动最底部 y
+            right_max_y: f32,  // 右侧浮动最底部 y
+        }
+
+        let mut float_tracks: std::collections::HashMap<usize, FloatTrack> = std::collections::HashMap::new();
+
+        // 收集所有 float 元素
+        for i in 0..self.layout_items.len() {
+            let float_type = self.layout_items[i].float;
+            if float_type == 0 { continue; } // none
+
+            let dom_id = self.layout_items[i].dom_id as usize;
+            let parent_id = match self.dom_tree.get_node(dom_id) {
+                Some(n) => n.parent,
+                None => continue,
+            };
+            let pid = match parent_id { Some(p) => p, None => continue };
+            let container_idx = match idx_map.get(&pid) { Some(&i) => i, None => continue };
+
+            let container = &self.layout_items[container_idx];
+            let container_width = container.size[0];
+            let container_left = container.pos[0] + container.padding[3];
+            let container_top = container.pos[1] + container.padding[0];
+
+            let track = float_tracks.entry(pid).or_insert(FloatTrack {
+                left_max_x: container_left,
+                right_min_x: container_left + container_width,
+                left_max_y: container_top,
+                right_max_y: container_top,
+            });
+
+            let item = &mut self.layout_items[i];
+            let item_w = item.size[0];
+
+            if float_type == 1 { // float: left
+                item.pos[0] = track.left_max_x;
+                item.pos[1] = track.left_max_y;
+                track.left_max_x += item_w + item.margin[1] + item.margin[3]; // 向右推进
+                track.left_max_y = track.left_max_y.max(item.pos[1] + item.size[1]);
+            } else { // float: right
+                item.pos[0] = track.right_min_x - item_w;
+                item.pos[1] = track.right_max_y;
+                track.right_min_x -= item_w + item.margin[1] + item.margin[3]; // 向左推进
+                track.right_max_y = track.right_max_y.max(item.pos[1] + item.size[1]);
+            }
+        }
+
+        // 处理 clear 属性 — 将 clear 元素推到浮动区域下方
+        for i in 0..self.layout_items.len() {
+            let clear_val = self.layout_items[i].clear;
+            if clear_val == 0 { continue; }
+
+            let dom_id = self.layout_items[i].dom_id as usize;
+            let parent_id = match self.dom_tree.get_node(dom_id) {
+                Some(n) => n.parent,
+                None => continue,
+            };
+            let pid = match parent_id { Some(p) => p, None => continue };
+
+            if let Some(track) = float_tracks.get(&pid) {
+                let min_clear_y = match clear_val {
+                    1 => track.left_max_y,  // clear: left
+                    2 => track.right_max_y, // clear: right
+                    _ => track.left_max_y.max(track.right_max_y), // clear: both
+                };
+                if self.layout_items[i].pos[1] < min_clear_y {
+                    self.layout_items[i].pos[1] = min_clear_y;
+                }
+            }
+        }
+    }
+
+    /// Inline 格式化 — 将 inline 元素水平排列在容器中，超出换行
+    fn compute_inline_layout(&mut self) {
+        // 建立 dom_id → 索引映射
+        let idx_map: std::collections::HashMap<usize, usize> = self.layout_items.iter()
+            .enumerate()
+            .map(|(i, it)| (it.dom_id as usize, i))
+            .collect();
+
+        // 按容器分组处理 inline 子元素
+        let container_ids: Vec<usize> = self.layout_items.iter()
+            .map(|it| it.dom_id as usize)
+            .collect();
+
+        for container_dom_id in &container_ids {
+            // 找出此容器的 inline 子元素
+            let mut inline_children: Vec<usize> = Vec::new();
+            for i in 0..self.layout_items.len() {
+                let item = &self.layout_items[i];
+                if item.is_inline == 0 || item.is_valid == 0 || item.is_hide == 1 {
+                    continue;
+                }
+                let is_child = self.dom_tree.get_node(item.dom_id as usize)
+                    .and_then(|n| n.parent)
+                    .map_or(false, |p| p == *container_dom_id);
+                if is_child {
+                    inline_children.push(i);
+                }
+            }
+
+            if inline_children.is_empty() {
+                continue;
+            }
+
+            // 找容器的 LayoutItem
+            let container_idx = match idx_map.get(container_dom_id) { Some(&i) => i, None => continue };
+            let container = &self.layout_items[container_idx];
+            let container_left = container.pos[0] + container.padding[3];
+            let container_top = container.pos[1] + container.padding[0];
+            let container_width = container.size[0];
+
+            // 水平排列 inline 元素
+            let mut cursor_x = container_left;
+            let mut cursor_y = container_top;
+            let mut line_max_height = 0.0f32;
+
+            for &idx in &inline_children {
+                let item_w = self.layout_items[idx].size[0];
+                let item_h = self.layout_items[idx].size[1];
+
+                // 如果放不下，换行
+                if cursor_x + item_w > container_left + container_width && cursor_x > container_left {
+                    cursor_x = container_left;
+                    cursor_y += line_max_height;
+                    line_max_height = 0.0;
+                }
+
+                self.layout_items[idx].pos[0] = cursor_x;
+                self.layout_items[idx].pos[1] = cursor_y;
+                cursor_x += item_w;
+                line_max_height = line_max_height.max(item_h);
             }
         }
     }
