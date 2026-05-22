@@ -453,7 +453,21 @@ impl WebNativeBridge for Engine {
     #[inline]
     fn set_attr(&mut self, node_id: usize, name: &str, value: &str) {
         if let Some(node) = self.dom_tree.get_node_mut(node_id) {
+            let old_value = node.get_attr(name).cloned();
             node.set_attr(name.to_string(), value.to_string());
+
+            // class/id 属性变更会影响 CSS 选择器匹配，标记需要重新布局
+            if name == "class" || name == "id" || name == "style" {
+                let changed = match (&old_value, value) {
+                    (Some(old), new) => old != new,
+                    (None, "") => false,
+                    (None, _) => true,
+                };
+                if changed {
+                    self.mark_dirty(DIRTY_INLINE_STYLE | DIRTY_LAYOUT);
+                    log::info!("Attribute '{}' changed on node {}, layout queued", name, node_id);
+                }
+            }
         }
     }
 
@@ -582,6 +596,11 @@ impl WebNativeBridge for Engine {
         self.pending_css = None;
         self.mark_dirty(DIRTY_CSS | DIRTY_LAYOUT);
         log::info!("CSS clear queued");
+    }
+
+    fn flush(&mut self) {
+        self.commit();
+        log::info!("Flush committed");
     }
 
     fn render(&mut self) -> Vec<u8> {

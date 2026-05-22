@@ -200,8 +200,13 @@ pub trait WebNativeBridge {
 
     // ── 渲染 ──
 
-    /// 渲染当前页面，返回 PNG 字节
+/// 渲染当前页面，返回 PNG 字节
     fn render(&mut self) -> Vec<u8>;
+
+    /// 强制提交所有待处理的变更（脏标记 → 布局更新）
+    /// 在 set_html/set_css/set_style/set_viewport 之后调用，
+    /// 确保 get_rect/hit_test 等查询操作能获得最新布局。
+    fn flush(&mut self) {}
 
     // ── 事件绑定 ──
 
