@@ -89,12 +89,92 @@ impl Engine {
                     // 执行 CPU 布局计算
                     CpuLayoutCompute::compute(&mut self.layout_items, &env);
 
+                    // 计算裁剪矩形（基于父容器 overflow 设置）
+                    self.compute_clip_rects();
+
                     log::info!("Layout computed: {} items", self.layout_items.len());
                 }
                 Err(e) => {
                     log::error!("Layout conversion failed: {}", e);
                 }
             }
+        }
+    }
+
+    /// 基于 DOM 祖先的 overflow 设置计算裁剪矩形
+    fn compute_clip_rects(&mut self) {
+        if self.layout_items.is_empty() {
+            return;
+        }
+
+        // 收集每个 DOM 节点的 LayoutItem 索引
+        let mut dom_to_item: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (idx, item) in self.layout_items.iter().enumerate() {
+            dom_to_item.insert(item.dom_id as usize, idx);
+        }
+
+        // 为每个 LayoutItem 计算裁剪矩形
+        for i in 0..self.layout_items.len() {
+            let mut clip: Option<[f32; 4]> = None;
+            let mut current_id = self.layout_items[i].dom_id as usize;
+
+            // 向上遍历 DOM 祖先链
+            loop {
+                let node = match self.dom_tree.get_node(current_id) {
+                    Some(n) => n,
+                    None => break,
+                };
+
+                let parent_id = match node.parent {
+                    Some(id) => id,
+                    None => break,
+                };
+
+                // 查找父节点的 LayoutItem
+                if let Some(&parent_idx) = dom_to_item.get(&parent_id) {
+                    let parent = &self.layout_items[parent_idx];
+                    let parent_overflow_x = parent.overflow_x.max(parent.overflow);
+                    let parent_overflow_y = parent.overflow_y.max(parent.overflow);
+
+                    // 只有非 visible (非 0) 才需要裁剪
+                    if parent_overflow_x != 0 || parent_overflow_y != 0 {
+                        let parent_x = parent.pos[0];
+                        let parent_y = parent.pos[1];
+                        let parent_w = parent.size[0];
+                        let parent_h = parent.size[1];
+
+                        let new_clip = [parent_x, parent_y, parent_w, parent_h];
+                        clip = Some(match clip {
+                            Some(existing) => Self::intersect_rects(existing, new_clip),
+                            None => new_clip,
+                        });
+                    }
+                }
+
+                current_id = parent_id;
+            }
+
+            // 应用裁剪矩形
+            if let Some(rect) = clip {
+                self.layout_items[i].clip_rect = rect;
+            }
+        }
+    }
+
+    /// 求两个矩形的交集
+    fn intersect_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+        let ax = a[0]; let ay = a[1]; let aw = a[2]; let ah = a[3];
+        let bx = b[0]; let by = b[1]; let bw = b[2]; let bh = b[3];
+
+        let x = ax.max(bx);
+        let y = ay.max(by);
+        let w = (ax + aw).min(bx + bw) - x;
+        let h = (ay + ah).min(by + bh) - y;
+
+        if w > 0.0 && h > 0.0 {
+            [x, y, w, h]
+        } else {
+            [0.0, 0.0, 0.0, 0.0] // 完全被裁剪掉
         }
     }
 
@@ -384,7 +464,7 @@ impl WebNativeBridge for Engine {
         pipeline.update_uniforms(self.width, self.height);
 
         // 使用渲染管线绘制布局项
-        if let Err(e) = pipeline.render(&texture_view, &self.layout_items) {
+        if let Err(e) = pipeline.render(&texture_view, &self.layout_items, self.width, self.height) {
             log::error!("Pipeline render failed: {}", e);
             return Vec::new();
         }

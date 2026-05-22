@@ -417,30 +417,36 @@ impl RenderPipelineWrapper {
         &mut self,
         view: &TextureView,
         layout_items: &[LayoutItem],
+        viewport_width: u32,
+        viewport_height: u32,
     ) -> Result<(), String> {
         let pipeline = self.pipeline.as_ref().ok_or("Render pipeline not initialized")?;
         let bind_group = self.bind_group.as_ref().ok_or("Bind group not created")?;
 
-        // 生成顶点数据
-        let mut vertices = Vec::new();
+        // 预处理：收集所有可见项的顶点和裁剪信息
+        let mut draw_items: Vec<([Vertex; 6], [f32; 4])> = Vec::new();
         for item in layout_items {
             if item.is_valid == 0 || item.is_hide == 1 {
                 continue;
             }
             let rect = Self::generate_vertices_from_item(item);
-            vertices.extend_from_slice(&rect);
+            draw_items.push((rect, item.clip_rect));
         }
 
-        if vertices.is_empty() {
+        if draw_items.is_empty() {
             return Ok(());
         }
 
-        // 创建顶点缓冲区
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        // 创建所有顶点缓冲区
+        let mut vertex_buffers: Vec<wgpu::Buffer> = Vec::with_capacity(draw_items.len());
+        for (rect, _) in &draw_items {
+            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(rect),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            vertex_buffers.push(buffer);
+        }
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -469,8 +475,23 @@ impl RenderPipelineWrapper {
 
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.draw(0..vertices.len() as u32, 0..1);
+
+            for (i, (_, clip_rect)) in draw_items.iter().enumerate() {
+                // 设置裁剪矩形
+                let has_clip = clip_rect[2] > 0.0 && clip_rect[3] > 0.0;
+                if has_clip {
+                    let sx = clip_rect[0].max(0.0) as u32;
+                    let sy = clip_rect[1].max(0.0) as u32;
+                    let sw = clip_rect[2].max(0.0) as u32;
+                    let sh = clip_rect[3].max(0.0) as u32;
+                    render_pass.set_scissor_rect(sx, sy, sw, sh);
+                } else {
+                    render_pass.set_scissor_rect(0, 0, viewport_width, viewport_height);
+                }
+
+                render_pass.set_vertex_buffer(0, vertex_buffers[i].slice(..));
+                render_pass.draw(0..6, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
