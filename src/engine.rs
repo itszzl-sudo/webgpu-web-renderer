@@ -1,19 +1,34 @@
 use crate::bridge::{WebNativeBridge, LayoutRect, LayoutNode, Color};
-use crate::dom::tree::{DomTree, DomNode};
+use crate::dom::tree::DomTree;
 use crate::dom::parser::HtmlParser;
 use crate::css::parser::StyleSheet;
 use crate::css::matcher::StyleMatcher;
+use crate::layout::{LayoutItem, LayoutEnv, LayoutConverter, CpuLayoutCompute};
+use crate::renderer::pipeline::RenderPipelineWrapper;
 use image::{RgbaImage, ImageFormat};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+// Type aliases for cleaner code
+type ClickHandler = Rc<RefCell<dyn FnMut(f32, f32)>>;
+type FormHandler = Rc<RefCell<dyn FnMut(HashMap<String, String>)>>;
+type WindowOpenHandler = Rc<RefCell<dyn FnMut(&str) -> bool>>;
 
 pub struct Engine {
     width: u32,
     height: u32,
-    device: Option<wgpu::Device>,
-    queue: Option<wgpu::Queue>,
+    device: Option<Arc<wgpu::Device>>,
+    queue: Option<Arc<wgpu::Queue>>,
     dom_tree: DomTree,
     stylesheet: StyleSheet,
     style_matcher: Option<StyleMatcher>,
+    layout_items: Vec<LayoutItem>,
+    render_pipeline: Option<RenderPipelineWrapper>,
+    click_handlers: HashMap<usize, Vec<ClickHandler>>,
+    form_handlers: HashMap<String, FormHandler>,
+    window_open_handlers: Vec<WindowOpenHandler>,
 }
 
 impl Engine {
@@ -40,8 +55,8 @@ impl Engine {
             None,
         )).map_err(|e| format!("Failed to create device: {}", e))?;
 
-        self.device = Some(device);
-        self.queue = Some(queue);
+        self.device = Some(Arc::new(device));
+        self.queue = Some(Arc::new(queue));
 
         log::info!("WebGPU initialized successfully");
         Ok(())
@@ -51,6 +66,33 @@ impl Engine {
     fn parse_css(&mut self, css_text: &str) {
         self.stylesheet = StyleSheet::parse(css_text);
         self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
+        // 重新计算布局
+        self.update_layout();
+    }
+
+    /// 更新布局
+    fn update_layout(&mut self) {
+        if let Some(ref matcher) = self.style_matcher {
+            let env = LayoutEnv::new(self.width as f32, self.height as f32);
+
+            // 创建布局转换器 (需要克隆 matcher)
+            let converter = LayoutConverter::new((*matcher).clone(), env.clone());
+
+            // 转换 DOM 节点到 LayoutItem
+            match converter.convert_dom(&self.dom_tree) {
+                Ok(items) => {
+                    self.layout_items = items;
+
+                    // 执行 CPU 布局计算
+                    CpuLayoutCompute::compute(&mut self.layout_items, &env);
+
+                    log::info!("Layout computed: {} items", self.layout_items.len());
+                }
+                Err(e) => {
+                    log::error!("Layout conversion failed: {}", e);
+                }
+            }
+        }
     }
 
     /// 将 RGBA 数据转换为 PNG 字节
@@ -82,6 +124,11 @@ impl WebNativeBridge for Engine {
             dom_tree: DomTree::new(),
             stylesheet,
             style_matcher,
+            layout_items: Vec::new(),
+            render_pipeline: None,
+            click_handlers: HashMap::new(),
+            form_handlers: HashMap::new(),
+            window_open_handlers: Vec::new(),
         }
     }
 
@@ -92,6 +139,8 @@ impl WebNativeBridge for Engine {
             Ok(tree) => {
                 self.dom_tree = tree;
                 log::info!("HTML parsed successfully, {} nodes", self.dom_tree.len());
+                // 触发布局更新
+                self.update_layout();
             }
             Err(e) => {
                 log::error!("Failed to parse HTML: {}", e);
@@ -169,31 +218,87 @@ impl WebNativeBridge for Engine {
     }
 
     fn get_rect(&self, selector: &str) -> Option<LayoutRect> {
-        // TODO: 实现布局查询
+        // 查找匹配的 DOM 节点
+        let node_id = self.query(selector)?;
+
+        // 查找对应的布局项
+        for item in &self.layout_items {
+            if item.dom_id == node_id as u32 {
+                return Some(LayoutRect {
+                    x: item.pos[0],
+                    y: item.pos[1],
+                    width: item.size[0],
+                    height: item.size[1],
+                });
+            }
+        }
+
         None
     }
 
     fn all_rects(&self) -> Vec<LayoutNode> {
-        // TODO: 实现所有布局节点查询
-        Vec::new()
+        let mut nodes = Vec::new();
+
+        for item in &self.layout_items {
+            if item.is_valid == 0 || item.is_hide == 1 {
+                continue;
+            }
+
+            let tag_name = self.tag_name(item.dom_id as usize).unwrap_or_else(|| "div".to_string());
+
+            let bg_color = item.bg_color;
+            let background = Some(Color {
+                r: (bg_color[0] * 255.0) as u8,
+                g: (bg_color[1] * 255.0) as u8,
+                b: (bg_color[2] * 255.0) as u8,
+                a: (bg_color[3] * 255.0) as u8,
+            });
+
+            nodes.push(LayoutNode {
+                dom_node: item.dom_id as usize,
+                tag_name,
+                x: item.pos[0],
+                y: item.pos[1],
+                width: item.size[0],
+                height: item.size[1],
+                background,
+            });
+        }
+
+        nodes
     }
 
-    fn hit_test(&self, _x: f32, _y: f32) -> Option<LayoutNode> {
-        // 简化的点击测试实现
-        if let Some(node_id) = self.dom_tree.get_root() {
-            if let Some(node) = self.dom_tree.get_node(node_id) {
-                let tag_name = node.tag_name.clone();
+    fn hit_test(&self, x: f32, y: f32) -> Option<LayoutNode> {
+        // 按 z-index 倒序遍历（后面的元素在上层）
+        let mut sorted_items: Vec<&LayoutItem> = self.layout_items.iter().collect();
+        sorted_items.sort_by(|a, b| {
+            b.z_index.partial_cmp(&a.z_index).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for item in sorted_items {
+            if item.hit_test(x, y) {
+                let tag_name = self.tag_name(item.dom_id as usize).unwrap_or_else(|| "div".to_string());
+
+                let bg_color = item.bg_color;
+                let background = Some(Color {
+                    r: (bg_color[0] * 255.0) as u8,
+                    g: (bg_color[1] * 255.0) as u8,
+                    b: (bg_color[2] * 255.0) as u8,
+                    a: (bg_color[3] * 255.0) as u8,
+                });
+
                 return Some(LayoutNode {
-                    dom_node: node_id,
+                    dom_node: item.dom_id as usize,
                     tag_name,
-                    x: 0.0,
-                    y: 0.0,
-                    width: 100.0,
-                    height: 20.0,
-                    background: None,
+                    x: item.pos[0],
+                    y: item.pos[1],
+                    width: item.size[0],
+                    height: item.size[1],
+                    background,
                 });
             }
         }
+
         None
     }
 
@@ -213,6 +318,8 @@ impl WebNativeBridge for Engine {
                 };
                 node.set_attr("style".to_string(), new_style);
                 log::info!("Style set for {}: {} = {}", selector, property, value);
+                // 触发布局更新
+                self.update_layout();
             }
         }
     }
@@ -339,36 +446,92 @@ impl WebNativeBridge for Engine {
         Vec::new()
     }
 
-    fn on_click(&mut self, _selector: &str, _handler: crate::bridge::EventHandler) {
-        log::info!("Click event registered (TODO)");
+    fn on_click(&mut self, selector: &str, handler: crate::bridge::EventHandler) {
+        if let Some(node_id) = self.query(selector) {
+            // 将 Box<dyn FnMut> 包装为 Rc<RefCell<dyn FnMut>>
+            let wrapped: Rc<RefCell<dyn FnMut(f32, f32)>> = Rc::new(RefCell::new(handler));
+            self.click_handlers
+                .entry(node_id)
+                .or_insert_with(Vec::new)
+                .push(wrapped);
+            log::info!("Click handler registered for {}", selector);
+        }
     }
 
-    fn on_form_submit(&mut self, _selector: &str, _handler: crate::bridge::FormHandler) {
-        log::info!("Form submit event registered (TODO)");
+    fn on_form_submit(&mut self, selector: &str, handler: crate::bridge::FormHandler) {
+        let wrapped: Rc<RefCell<dyn FnMut(HashMap<String, String>)>> = Rc::new(RefCell::new(handler));
+        self.form_handlers.insert(selector.to_string(), wrapped);
+        log::info!("Form submit handler registered for {}", selector);
     }
 
-    fn on_window_open(&mut self, _handler: crate::bridge::WindowOpenHandler) {
-        log::info!("Window.open event registered (TODO)");
+    fn on_window_open(&mut self, handler: crate::bridge::WindowOpenHandler) {
+        let wrapped: Rc<RefCell<dyn FnMut(&str) -> bool>> = Rc::new(RefCell::new(handler));
+        self.window_open_handlers.push(wrapped);
+        log::info!("Window open handler registered");
     }
 
-    fn handle_click(&mut self, _x: f32, _y: f32) -> bool {
-        log::info!("Click handled (TODO)");
+    fn handle_click(&mut self, x: f32, y: f32) -> bool {
+        // 执行 hit_test 找到被点击的元素
+        if let Some(node) = self.hit_test(x, y) {
+            log::info!("Click at ({}, {}) hit node {}", x, y, node.tag_name);
+
+            // 触发该元素的点击处理器
+            if let Some(handlers) = self.click_handlers.get(&node.dom_node) {
+                for handler in handlers {
+                    handler.borrow_mut()(x, y);
+                }
+                return true;
+            }
+
+            // 事件冒泡：检查父元素
+            let mut current_node = node.dom_node;
+            while let Some(parent_id) = self.parent_node(current_node) {
+                if let Some(handlers) = self.click_handlers.get(&parent_id) {
+                    for handler in handlers {
+                        handler.borrow_mut()(x, y);
+                    }
+                    return true;
+                }
+                current_node = parent_id;
+            }
+        }
         false
     }
 
-    fn handle_form_submit(&mut self, _form_selector: &str) {
-        log::info!("Form submit handled (TODO)");
+    fn handle_form_submit(&mut self, form_selector: &str) {
+        if let Some(handler) = self.form_handlers.get(form_selector) {
+            // 收集表单数据
+            let mut form_data = HashMap::new();
+
+            // 查找表单内的输入元素
+            if let Some(form_id) = self.query(form_selector) {
+                // 查找所有输入元素 (简化实现)
+                for input_id in self.query_all(&format!("{} input, {} select, {} textarea", form_selector, form_selector, form_selector)) {
+                    if let Some(name) = self.get_attr(input_id, "name") {
+                        let value = self.get_attr(input_id, "value").unwrap_or_default();
+                        form_data.insert(name, value);
+                    }
+                }
+            }
+
+            handler.borrow_mut()(form_data);
+        }
     }
 
-    fn handle_window_open(&mut self, _url: &str) -> bool {
-        log::info!("Window open handled (TODO)");
+    fn handle_window_open(&mut self, url: &str) -> bool {
+        for handler in &self.window_open_handlers {
+            if handler.borrow_mut()(url) {
+                return true;
+            }
+        }
         false
     }
 
     fn set_viewport(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        // TODO: 通知 WebGPU 更新视口
+        // 重新计算布局
+        self.update_layout();
     }
 
     fn viewport(&self) -> (u32, u32) {

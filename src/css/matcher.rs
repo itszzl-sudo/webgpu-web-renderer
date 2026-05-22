@@ -45,6 +45,7 @@ impl StyleValue {
 }
 
 /// 样式匹配器
+#[derive(Clone)]
 pub struct StyleMatcher {
     stylesheet: StyleSheet,
 }

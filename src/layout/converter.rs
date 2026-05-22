@@ -37,7 +37,7 @@ impl LayoutConverter {
         };
 
         let computed_style = self.style_matcher.compute_style(dom_tree, node_id);
-        let layout_item = self.node_to_layout_item(node, &computed_style, depth);
+        let layout_item = self.node_to_layout_item(node, node_id, &computed_style, depth);
         items.push(layout_item);
 
         let mut child_y = current_y + 20.0;
@@ -50,7 +50,8 @@ impl LayoutConverter {
 
     fn node_to_layout_item(
         &self,
-        _node: &crate::dom::tree::DomNode,
+        node: &crate::dom::tree::DomNode,
+        node_id: usize,
         computed_style: &ComputedStyle,
         depth: u32,
     ) -> LayoutItem {
@@ -107,6 +108,7 @@ impl LayoutConverter {
         let min_height = self.parse_min_height(computed_style);
 
         LayoutItem::new()
+            .with_dom_id(node_id as u32)
             .with_size(width, height)
             .with_margin(margin.0, margin.1, margin.2, margin.3)
             .with_padding(padding.0, padding.1, padding.2, padding.3)

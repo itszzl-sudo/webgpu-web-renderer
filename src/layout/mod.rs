@@ -4,3 +4,4 @@ pub mod converter;
 
 pub use items::{LayoutItem, LayoutEnv};
 pub use compute::{LayoutCompute, CpuLayoutCompute};
+pub use converter::LayoutConverter;

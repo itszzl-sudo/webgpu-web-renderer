@@ -2,6 +2,7 @@
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayoutItem {
+    pub dom_id: u32,              // DOM 节点 ID
     pub size: [f32; 2],        // [width, height]
     pub margin: [f32; 4],      // [top, right, bottom, left]
     pub padding: [f32; 4],     // [top, right, bottom, left]
@@ -62,6 +63,7 @@ impl LayoutItem {
 
     pub fn new() -> Self {
         LayoutItem {
+            dom_id: 0,
             size: [0.0, 0.0],
             margin: [0.0, 0.0, 0.0, 0.0],
             padding: [0.0, 0.0, 0.0, 0.0],
@@ -118,6 +120,11 @@ impl LayoutItem {
 
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = [width, height];
+        self
+    }
+
+    pub fn with_dom_id(mut self, dom_id: u32) -> Self {
+        self.dom_id = dom_id;
         self
     }
 
