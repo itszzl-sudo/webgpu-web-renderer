@@ -1,129 +1,254 @@
-use crate::layout::{LayoutItem, LayoutEnv};
-use wgpu::{Device, RenderPipeline as WgpuRenderPipeline, TextureView};
+use crate::layout::LayoutItem;
+use wgpu::{Device, RenderPipeline, TextureView, TextureFormat};
+use wgpu::util::DeviceExt;
+use std::sync::Arc;
 
-/// 顶点数据
+/// 顶点数据 - 与 WGSL 着色器对应
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    position: [f32; 2],
-    uv: [f32; 2],
-    tex_idx: u32,
+    pub position: [f32; 2],  // [x, y]
+    pub uv: [f32; 2],        // [u, v]
+    pub tex_idx: u32,         // 纹理索引 (0=无纹理, >0=有纹理)
+    pub color: [f32; 4],      // [r, g, b, a]
 }
 
 impl Vertex {
-    pub fn new(x: f32, y: f32, u: f32, v: f32, tex_idx: u32) -> Self {
+    pub fn new(x: f32, y: f32, u: f32, v: f32, tex_idx: u32, color: [f32; 4]) -> Self {
         Vertex {
             position: [x, y],
             uv: [u, v],
             tex_idx,
+            color,
         }
+    }
+
+    /// 创建纯色顶点 (无纹理)
+    pub fn solid(x: f32, y: f32, u: f32, v: f32, r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self::new(x, y, u, v, 0, [r, g, b, a])
+    }
+}
+
+/// 生成矩形顶点 (2个三角形组成)
+pub fn generate_rect_vertices(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    tex_idx: u32,
+    color: [f32; 4],
+) -> [Vertex; 6] {
+    let x2 = x + width;
+    let y2 = y + height;
+
+    [
+        // 第一个三角形 (左上, 右上, 左下)
+        Vertex::new(x, y, 0.0, 0.0, tex_idx, color),
+        Vertex::new(x2, y, 1.0, 0.0, tex_idx, color),
+        Vertex::new(x, y2, 0.0, 1.0, tex_idx, color),
+        // 第二个三角形 (右上, 右下, 左下)
+        Vertex::new(x2, y, 1.0, 0.0, tex_idx, color),
+        Vertex::new(x2, y2, 1.0, 1.0, tex_idx, color),
+        Vertex::new(x, y2, 0.0, 1.0, tex_idx, color),
+    ]
+}
+
+/// Uniform 数据 - 与 WGSL Uniforms 对应
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Uniforms {
+    pub viewport_size: [f32; 2],
+    pub time: f32,
+    pub _pad: [f32; 2],
+}
+
+impl Default for Uniforms {
+    fn default() -> Self {
+        Uniforms {
+            viewport_size: [800.0, 600.0],
+            time: 0.0,
+            _pad: [0.0, 0.0],
+        }
+    }
+}
+
+/// 纹理管理器
+pub struct TextureManager {
+    device: Arc<Device>,
+    textures: Vec<wgpu::Texture>,
+    texture_views: Vec<wgpu::TextureView>,
+    sampler: wgpu::Sampler,
+}
+
+impl TextureManager {
+    pub fn new(device: Arc<Device>) -> Self {
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Texture Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        TextureManager {
+            device,
+            textures: Vec::new(),
+            texture_views: Vec::new(),
+            sampler,
+        }
+    }
+
+    /// 创建纯色纹理
+    pub fn create_solid_color(&mut self, queue: &wgpu::Queue, r: f32, g: f32, b: f32, a: f32) -> u32 {
+        let rgba = vec![
+            (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, (a * 255.0) as u8,
+        ];
+
+        self.create_texture_from_rgba(queue, &rgba, 1, 1)
+    }
+
+    /// 从 RGBA 数据创建纹理
+    pub fn create_texture_from_rgba(&mut self, queue: &wgpu::Queue, rgba_data: &[u8], width: u32, height: u32) -> u32 {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Created Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba_data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let tex_idx = self.textures.len() as u32 + 1; // 纹理索引从 1 开始
+        self.textures.push(texture);
+        self.texture_views.push(view);
+
+        tex_idx
+    }
+
+    /// 获取纹理视图
+    pub fn get_view(&self, index: usize) -> Option<&wgpu::TextureView> {
+        self.texture_views.get(index)
+    }
+
+    /// 获取采样器
+    pub fn get_sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+
+    /// 获取纹理数量
+    pub fn len(&self) -> usize {
+        self.textures.len()
+    }
+
+    /// 清空所有纹理
+    pub fn clear(&mut self) {
+        self.textures.clear();
+        self.texture_views.clear();
     }
 }
 
 /// 渲染管线
-pub struct RenderPipeline {
-    device: Device,
-    pipeline: Option<wgpu::RenderPipeline>,
-    vertex_buffer: Option<wgpu::Buffer>,
+pub struct RenderPipelineWrapper {
+    device: Arc<Device>,
+    queue: Arc<wgpu::Queue>,
+    pipeline: Option<RenderPipeline>,
     uniform_buffer: Option<wgpu::Buffer>,
-    texture_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    layout_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    texture_manager: TextureManager,
+    vertex_buffer: Option<wgpu::Buffer>,
 }
 
-impl RenderPipeline {
-    pub fn new(device: Device) -> Self {
-        RenderPipeline {
+impl RenderPipelineWrapper {
+    pub fn new(device: Arc<Device>, queue: Arc<wgpu::Queue>) -> Self {
+        let texture_manager = TextureManager::new(device.clone());
+
+        RenderPipelineWrapper {
             device,
+            queue,
             pipeline: None,
-            vertex_buffer: None,
             uniform_buffer: None,
-            texture_bind_group_layout: None,
-            layout_bind_group_layout: None,
+            texture_manager,
+            vertex_buffer: None,
         }
     }
 
     /// 初始化渲染管线
-    pub fn initialize(&mut self) -> Result<(), String> {
-        self.create_bind_group_layouts()?;
-        self.create_uniform_buffer()?;
+    pub fn initialize(&mut self, width: u32, height: u32) -> Result<(), String> {
+        self.create_uniform_buffer(width, height)?;
         self.create_render_pipeline()?;
-        Ok(())
-    }
 
-    /// 创建绑定组布局
-    fn create_bind_group_layouts(&mut self) -> Result<(), String> {
-        self.texture_bind_group_layout = Some(
-            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Texture Bind Group Layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            })
-        );
-
-        self.layout_bind_group_layout = Some(
-            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Layout Bind Group Layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            })
-        );
+        // 创建默认白色纹理
+        self.texture_manager.create_solid_color(&self.queue, 1.0, 1.0, 1.0, 1.0);
 
         Ok(())
     }
 
-    /// 创建 uniform 缓冲区
-    fn create_uniform_buffer(&mut self) -> Result<(), String> {
+    /// 创建 Uniform 缓冲区
+    fn create_uniform_buffer(&mut self, width: u32, height: u32) -> Result<(), String> {
         self.uniform_buffer = Some(
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Uniform Buffer"),
-                size: LayoutEnv::SIZE as u64,
+                size: std::mem::size_of::<Uniforms>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
         );
+
+        // 更新 uniform 数据
+        let uniforms = Uniforms {
+            viewport_size: [width as f32, height as f32],
+            time: 0.0,
+            _pad: [0.0, 0.0],
+        };
+
+        if let Some(buffer) = self.uniform_buffer.as_ref() {
+            self.queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[uniforms]));
+        }
 
         Ok(())
     }
 
     /// 创建渲染管线
     fn create_render_pipeline(&mut self) -> Result<(), String> {
+        let shader_source = include_str!("render.wgsl");
         let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Render Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("render.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[
-                self.texture_bind_group_layout.as_ref().unwrap(),
-                self.layout_bind_group_layout.as_ref().unwrap(),
-            ],
+            bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
@@ -152,6 +277,11 @@ impl RenderPipeline {
                             shader_location: 2,
                             format: wgpu::VertexFormat::Uint32,
                         },
+                        wgpu::VertexAttribute {
+                            offset: 20,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
                     ],
                 }],
             },
@@ -159,7 +289,7 @@ impl RenderPipeline {
                 module: &shader,
                 entry_point: "fragment_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: TextureFormat::Rgba8UnormSrgb,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -197,14 +327,64 @@ impl RenderPipeline {
         Ok(())
     }
 
+    /// 获取纹理管理器
+    pub fn texture_manager(&mut self) -> &mut TextureManager {
+        &mut self.texture_manager
+    }
+
+    /// 从 LayoutItem 生成顶点
+    pub fn generate_vertices_from_item(item: &LayoutItem) -> [Vertex; 6] {
+        generate_rect_vertices(
+            item.pos[0],
+            item.pos[1],
+            item.size[0],
+            item.size[1],
+            item.tex_idx,
+            item.bg_color,
+        )
+    }
+
+    /// 预创建顶点缓冲区
+    pub fn create_vertex_buffer(&mut self, vertex_count: usize) {
+        let buffer_size = vertex_count * std::mem::size_of::<Vertex>();
+        self.vertex_buffer = Some(
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Vertex Buffer"),
+                size: buffer_size as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        );
+    }
+
     /// 渲染场景
     pub fn render(
         &mut self,
         view: &TextureView,
         layout_items: &[LayoutItem],
-        layout_env: &LayoutEnv,
     ) -> Result<(), String> {
         let pipeline = self.pipeline.as_ref().ok_or("Render pipeline not initialized")?;
+
+        // 生成顶点数据
+        let mut vertices = Vec::new();
+        for item in layout_items {
+            if item.is_valid == 0 || item.is_hide == 1 {
+                continue;
+            }
+            let rect = Self::generate_vertices_from_item(item);
+            vertices.extend_from_slice(&rect);
+        }
+
+        if vertices.is_empty() {
+            return Ok(());
+        }
+
+        // 创建顶点缓冲区
+        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -232,7 +412,11 @@ impl RenderPipeline {
             });
 
             render_pass.set_pipeline(pipeline);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.draw(0..vertices.len() as u32, 0..1);
         }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
 
         Ok(())
     }
@@ -244,8 +428,40 @@ mod tests {
 
     #[test]
     fn test_vertex_creation() {
-        let vertex = Vertex::new(0.0, 0.0, 0.0, 0.0, 1);
+        let vertex = Vertex::new(0.0, 0.0, 0.0, 0.0, 1, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(vertex.position, [0.0, 0.0]);
         assert_eq!(vertex.tex_idx, 1);
+        assert_eq!(vertex.color, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_generate_rect_vertices() {
+        let vertices = generate_rect_vertices(10.0, 20.0, 100.0, 50.0, 0, [0.5, 0.5, 0.5, 1.0]);
+        
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(vertices[0].position, [10.0, 20.0]);
+        assert_eq!(vertices[1].position, [110.0, 20.0]);
+        assert_eq!(vertices[2].position, [10.0, 70.0]);
+    }
+
+    #[test]
+    fn test_layout_item_to_vertices() {
+        let item = LayoutItem::new()
+            .with_pos(50.0, 100.0)
+            .with_size(200.0, 150.0)
+            .with_bg_color(0.0, 0.5, 1.0, 1.0);
+
+        let vertices = RenderPipelineWrapper::generate_vertices_from_item(&item);
+
+        assert_eq!(vertices[0].position, [50.0, 100.0]);
+        assert_eq!(vertices[1].position, [250.0, 100.0]);
+        assert_eq!(vertices[0].color, [0.0, 0.5, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_uniforms_default() {
+        let uniforms = Uniforms::default();
+        assert_eq!(uniforms.viewport_size, [800.0, 600.0]);
+        assert_eq!(uniforms.time, 0.0);
     }
 }

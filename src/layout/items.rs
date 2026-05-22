@@ -388,6 +388,39 @@ impl LayoutItem {
     pub fn y(&self) -> f32 {
         self.pos[1]
     }
+
+    /// 点击测试 - 检查点是否在元素范围内
+    pub fn hit_test(&self, x: f32, y: f32) -> bool {
+        // 检查元素是否有效且可见
+        if self.is_valid == 0 || self.is_hide == 1 {
+            return false;
+        }
+
+        // 检查 pointer_events
+        if self.pointer_events == 1 {
+            // none - 不响应点击
+            return false;
+        }
+
+        // 检查 visibility
+        if self.visibility == 1 {
+            // hidden - 不响应点击
+            return false;
+        }
+
+        // AABB 碰撞检测
+        let left = self.pos[0];
+        let right = self.pos[0] + self.size[0];
+        let top = self.pos[1];
+        let bottom = self.pos[1] + self.size[1];
+
+        x >= left && x <= right && y >= top && y <= bottom
+    }
+
+    /// 获取元素的边界矩形
+    pub fn bounds(&self) -> (f32, f32, f32, f32) {
+        (self.pos[0], self.pos[1], self.size[0], self.size[1])
+    }
 }
 
 impl Default for LayoutItem {
@@ -486,5 +519,81 @@ mod tests {
         // size[2] + margin[4] + padding[4] + pos[2] + size_constraint[2] + (u32)*13 + (f32)*11 + (f32)*5 + (f32)*4 + (f32)*3 + i32 + bg_color[4] + transform[6] + shadow_color[4]
         assert!(LayoutItem::SIZE >= 272);
         assert_eq!(LayoutEnv::SIZE, 20);
+    }
+
+    #[test]
+    fn test_hit_test_inside() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0);
+
+        assert!(item.hit_test(50.0, 40.0));  // 中心点
+        assert!(item.hit_test(10.0, 20.0));  // 左上角
+        assert!(item.hit_test(110.0, 70.0)); // 右下角
+    }
+
+    #[test]
+    fn test_hit_test_outside() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0);
+
+        assert!(!item.hit_test(5.0, 40.0));   // 左边外
+        assert!(!item.hit_test(115.0, 40.0)); // 右边外
+        assert!(!item.hit_test(50.0, 15.0));   // 上边外
+        assert!(!item.hit_test(50.0, 75.0));   // 下边外
+    }
+
+    #[test]
+    fn test_hit_test_hidden_item() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0)
+            .hide();
+
+        assert!(!item.hit_test(50.0, 40.0)); // 隐藏项不响应点击
+    }
+
+    #[test]
+    fn test_hit_test_disabled_item() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0)
+            .disable();
+
+        assert!(!item.hit_test(50.0, 40.0)); // 禁用项不响应点击
+    }
+
+    #[test]
+    fn test_hit_test_pointer_events_none() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0)
+            .with_pointer_events(1); // pointer-events: none
+
+        assert!(!item.hit_test(50.0, 40.0)); // 不响应点击
+    }
+
+    #[test]
+    fn test_hit_test_visibility_hidden() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0)
+            .with_visibility(1); // visibility: hidden
+
+        assert!(!item.hit_test(50.0, 40.0)); // 不响应点击
+    }
+
+    #[test]
+    fn test_bounds() {
+        let item = LayoutItem::new()
+            .with_pos(10.0, 20.0)
+            .with_size(100.0, 50.0);
+
+        let (x, y, w, h) = item.bounds();
+        assert_eq!(x, 10.0);
+        assert_eq!(y, 20.0);
+        assert_eq!(w, 100.0);
+        assert_eq!(h, 50.0);
     }
 }
