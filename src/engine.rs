@@ -18,6 +18,14 @@ type ClickHandler = Rc<RefCell<dyn FnMut(f32, f32)>>;
 type FormHandler = Rc<RefCell<dyn FnMut(HashMap<String, String>)>>;
 type WindowOpenHandler = Rc<RefCell<dyn FnMut(&str) -> bool>>;
 
+/// 脏标记位掩码 — 跟踪哪些状态需要重新计算
+const DIRTY_NONE: u8 = 0;
+const DIRTY_HTML: u8 = 1 << 0;        // HTML 内容已变
+const DIRTY_CSS: u8 = 1 << 1;         // CSS 样式表已变
+const DIRTY_INLINE_STYLE: u8 = 1 << 2; // 内联样式已变
+const DIRTY_VIEWPORT: u8 = 1 << 3;    // 视口尺寸已变
+const DIRTY_LAYOUT: u8 = 1 << 4;      // 需要重新布局 (CSS/HTML/viewport 等任意变化)
+
 /// HTML 标签默认样式表 (User Agent Stylesheet)
 const UA_STYLESHEET: &str = r#"
 /* ── 块级元素 ── */
@@ -97,6 +105,11 @@ pub struct Engine {
     form_handlers: HashMap<String, FormHandler>,
     window_open_handlers: Vec<WindowOpenHandler>,
     current_url: String,
+    // ── 增量更新字段 ──
+    dirty_flags: u8,               // 脏标记位掩码
+    pending_html: Option<String>,  // 待提交的 HTML
+    pending_css: Option<String>,   // 待提交的 CSS
+    pending_viewport: Option<(u32, u32)>, // 待提交的视口
 }
 
 impl Engine {
@@ -272,6 +285,81 @@ impl Engine {
         
         png_bytes
     }
+
+    // ── 增量更新 ──
+
+    /// 标记脏位（防抖合并：按位或合并多次标记）
+    fn mark_dirty(&mut self, bits: u8) {
+        self.dirty_flags |= bits;
+    }
+
+    /// 提交并应用所有待处理的变更，做一次统一布局更新
+    fn commit(&mut self) {
+        let flags = self.dirty_flags;
+        if flags == DIRTY_NONE {
+            return;
+        }
+        self.dirty_flags = DIRTY_NONE;
+
+        log::info!(
+            "Commit: flags={:04b} (html={} css={} style={} viewport={})",
+            flags,
+            (flags & DIRTY_HTML) != 0,
+            (flags & DIRTY_CSS) != 0,
+            (flags & DIRTY_INLINE_STYLE) != 0,
+            (flags & DIRTY_VIEWPORT) != 0,
+        );
+
+        // 1. 处理 HTML 变更
+        if (flags & DIRTY_HTML) != 0 {
+            if let Some(ref html) = self.pending_html {
+                let mut parser = HtmlParser::new(html);
+                match parser.parse() {
+                    Ok(tree) => {
+                        self.dom_tree = tree;
+                        log::info!("HTML committed: {} nodes", self.dom_tree.len());
+                    }
+                    Err(e) => {
+                        log::error!("HTML commit failed: {}", e);
+                    }
+                }
+                self.pending_html = None;
+            }
+        }
+
+        // 2. 处理视口变更
+        if (flags & DIRTY_VIEWPORT) != 0 {
+            if let Some((w, h)) = self.pending_viewport {
+                self.width = w;
+                self.height = h;
+                self.pending_viewport = None;
+                log::info!("Viewport committed: {}x{}", w, h);
+            }
+        }
+
+        // 3. 只在需要时重新解析样式表
+        if (flags & DIRTY_CSS) != 0 {
+            if let Some(ref css) = self.pending_css {
+                let mut combined = StyleSheet::parse(UA_STYLESHEET);
+                let user_rules = StyleSheet::parse(css);
+                combined.rules.extend(user_rules.rules);
+                self.stylesheet = combined;
+                self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
+                self.pending_css = None;
+                log::info!("CSS committed");
+            } else {
+                // clear_css 路径：重置到 UA-only
+                self.stylesheet = StyleSheet::parse(UA_STYLESHEET);
+                self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
+                log::info!("CSS reset to UA defaults");
+            }
+        }
+
+        // 4. 做一次统一的布局更新（如果 layout 相关的内容变了）
+        if (flags & (DIRTY_HTML | DIRTY_CSS | DIRTY_INLINE_STYLE | DIRTY_VIEWPORT)) != 0 {
+            self.update_layout();
+        }
+    }
 }
 
 impl WebNativeBridge for Engine {
@@ -298,23 +386,18 @@ impl WebNativeBridge for Engine {
             form_handlers: HashMap::new(),
             window_open_handlers: Vec::new(),
             current_url: String::new(),
+            dirty_flags: DIRTY_NONE,
+            pending_html: None,
+            pending_css: None,
+            pending_viewport: None,
         }
     }
 
     /// 设置页面 HTML
     fn set_html(&mut self, html: &str) {
-        let mut parser = HtmlParser::new(html);
-        match parser.parse() {
-            Ok(tree) => {
-                self.dom_tree = tree;
-                log::info!("HTML parsed successfully, {} nodes", self.dom_tree.len());
-                // 触发布局更新
-                self.update_layout();
-            }
-            Err(e) => {
-                log::error!("Failed to parse HTML: {}", e);
-            }
-        }
+        self.pending_html = Some(html.to_string());
+        self.mark_dirty(DIRTY_HTML | DIRTY_LAYOUT);
+        log::info!("HTML queued for update");
     }
 
     /// 按 CSS 选择器查找第一个元素，返回 DOM 节点 ID
@@ -387,7 +470,8 @@ impl WebNativeBridge for Engine {
     }
 
     fn get_rect(&self, selector: &str) -> Option<LayoutRect> {
-        // 查找匹配的 DOM 节点
+        // 获取前确保布局是最新的（查询不走 &mut，假设调用前 render/commit）
+        // get_rect 是 &self，不用 commit
         let node_id = self.query(selector)?;
 
         // 查找对应的布局项
@@ -472,15 +556,9 @@ impl WebNativeBridge for Engine {
     }
 
     fn set_css(&mut self, css_text: &str) {
-        // 合并 UA 默认样式和用户样式
-        let mut combined = StyleSheet::parse(UA_STYLESHEET);
-        let user_rules = StyleSheet::parse(css_text);
-        combined.rules.extend(user_rules.rules);
-        self.stylesheet = combined;
-        self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
-        // 重新计算布局
-        self.update_layout();
-        log::info!("CSS rules updated (UA + user)");
+        self.pending_css = Some(css_text.to_string());
+        self.mark_dirty(DIRTY_CSS | DIRTY_LAYOUT);
+        log::info!("CSS queued for update");
     }
 
     fn set_style(&mut self, selector: &str, property: &str, value: &str) {
@@ -493,22 +571,23 @@ impl WebNativeBridge for Engine {
                     format!("{}; {}: {}", current_style, property, value)
                 };
                 node.set_attr("style".to_string(), new_style);
-                log::info!("Style set for {}: {} = {}", selector, property, value);
-                // 触发布局更新
-                self.update_layout();
+                self.mark_dirty(DIRTY_INLINE_STYLE | DIRTY_LAYOUT);
+                log::info!("Style queued for {}: {} = {}", selector, property, value);
             }
         }
     }
 
     fn clear_css(&mut self) {
-        // 重置到仅 UA 默认样式
-        self.stylesheet = StyleSheet::parse(UA_STYLESHEET);
-        self.style_matcher = Some(StyleMatcher::new(self.stylesheet.clone()));
-        self.update_layout();
-        log::info!("CSS cleared (UA defaults retained)");
+        // 清除 pending_css (设为 None 表示 commit 时重置到 UA-only)
+        self.pending_css = None;
+        self.mark_dirty(DIRTY_CSS | DIRTY_LAYOUT);
+        log::info!("CSS clear queued");
     }
 
     fn render(&mut self) -> Vec<u8> {
+        // 提交待处理的变更（防抖合并：多次变更只做一次布局）
+        self.commit();
+
         log::info!("Starting render process");
 
         // 确保 WebGPU 已初始化
@@ -718,10 +797,9 @@ impl WebNativeBridge for Engine {
     }
 
     fn set_viewport(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
-        // 重新计算布局
-        self.update_layout();
+        self.pending_viewport = Some((width, height));
+        self.mark_dirty(DIRTY_VIEWPORT | DIRTY_LAYOUT);
+        log::info!("Viewport change queued: {}x{}", width, height);
     }
 
     fn viewport(&self) -> (u32, u32) {
